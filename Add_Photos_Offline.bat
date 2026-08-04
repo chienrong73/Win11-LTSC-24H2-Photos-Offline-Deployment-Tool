@@ -1,12 +1,15 @@
 @echo off
-REM -----------------------------------------------------------------------------
-REM Name:        Add_Photos_Offline.bat
-REM Purpose:     Batch launcher placeholder for Microsoft Photos offline deployment.
-REM Project:     Win11-LTSC-24H2-Photos-Offline-Deployment-Tool
-REM Encoding:    UTF-8
-REM Author:      Enterprise Endpoint Engineering
-REM Copyright:   (c) 2026. All rights reserved.
-REM -----------------------------------------------------------------------------
-REM Functionality intentionally not implemented in the initial project structure.
+setlocal
+set "SCRIPT_DIR=%~dp0"
 
-exit /b 0
+fltmc >nul 2>&1
+if errorlevel 1 (
+    echo Requesting administrator privileges...
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File ""%SCRIPT_DIR%Add_Photos.ps1""'"
+    exit /b %errorlevel%
+)
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%Add_Photos.ps1" %*
+set "EXIT_CODE=%errorlevel%"
+if not "%EXIT_CODE%"=="0" echo Deployment failed with exit code %EXIT_CODE%.
+exit /b %EXIT_CODE%

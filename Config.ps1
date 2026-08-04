@@ -1,11 +1,10 @@
 <#
 .SYNOPSIS
-    Defines configuration placeholders for Microsoft Photos offline deployment.
+    Defines configuration for Microsoft Photos offline deployment.
 
 .DESCRIPTION
-    Establishes the configuration file for the Windows 11 LTSC 24H2 Microsoft Photos
-    offline deployment tool. Values and behavior are intentionally deferred until the
-    implementation phase.
+    Establishes the settings used by the Windows 11 LTSC 24H2 Microsoft Photos offline
+    deployment workflow.
 
 .NOTES
     Project: Win11-LTSC-24H2-Photos-Offline-Deployment-Tool
