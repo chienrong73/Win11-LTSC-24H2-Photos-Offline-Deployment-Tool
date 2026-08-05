@@ -71,5 +71,5 @@ catch {
 }
 finally {
     Close-Logger
-    if ($MyInvocation.InvocationName -ne '.') { $host.SetShouldExit($exitCode) }
+    if ($MyInvocation.InvocationName -ne '.') { exit $exitCode }
 }

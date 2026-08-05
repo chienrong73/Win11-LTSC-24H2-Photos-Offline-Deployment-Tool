@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BATCH = (ROOT / "Add_Photos_Offline.bat").read_text(encoding="utf-8")
 DISM = (ROOT / "Modules" / "Dism.psm1").read_text(encoding="utf-8")
 ELEVATE = (ROOT / "Modules" / "Elevate-AddPhotos.ps1").read_text(encoding="utf-8")
+ADD_PHOTOS = (ROOT / "Add_Photos.ps1").read_text(encoding="utf-8")
 
 
 def assert_contains(text: str, needle: str, message: str) -> None:
@@ -62,6 +63,16 @@ def test_batch_elevation_preserves_arguments_and_exit_code() -> None:
     )
 
 
+def test_add_photos_exits_with_script_exit_code() -> None:
+    assert_contains(
+        ADD_PHOTOS,
+        "if ($MyInvocation.InvocationName -ne '.') { exit $exitCode }",
+        "Add_Photos.ps1 must terminate the PowerShell process with its deployment exit code",
+    )
+    if "$host.SetShouldExit($exitCode)" in ADD_PHOTOS:
+        raise AssertionError("Add_Photos.ps1 must not rely on SetShouldExit when the elevation helper needs the process exit code")
+
+
 def get_invoke_offline_deployment_body() -> str:
     match = re.search(r"function Invoke-OfflineDeployment \{(?P<body>.*)\n\}\n\nExport-ModuleMember", DISM, re.S)
     if not match:
@@ -96,6 +107,7 @@ def test_no_commit_reports_false() -> None:
 def main() -> None:
     tests = [
         test_batch_elevation_preserves_arguments_and_exit_code,
+        test_add_photos_exits_with_script_exit_code,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
         test_no_commit_reports_false,
