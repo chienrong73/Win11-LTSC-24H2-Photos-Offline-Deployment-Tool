@@ -47,6 +47,16 @@ def test_batch_elevation_preserves_arguments_and_exit_code() -> None:
     )
     assert_contains(
         BATCH,
+        "setlocal EnableDelayedExpansion",
+        "batch file must enable delayed expansion for exit code reads inside the elevation block",
+    )
+    assert_contains(
+        BATCH,
+        "exit /b !ELEVATED_EXIT_CODE!",
+        "batch file must return the actual elevated helper exit code, not stale %errorlevel%",
+    )
+    assert_contains(
+        BATCH,
         'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_PATH%" %*',
         "the elevated batch path must forward all original arguments to Add_Photos.ps1",
     )

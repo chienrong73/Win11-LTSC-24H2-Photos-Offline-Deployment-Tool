@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_PATH=%SCRIPT_DIR%Add_Photos.ps1"
 
@@ -7,7 +7,8 @@ fltmc >nul 2>&1
 if errorlevel 1 (
     echo Requesting administrator privileges...
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%Modules\Elevate-AddPhotos.ps1" -ScriptPath "%SCRIPT_PATH%" %*
-    exit /b %errorlevel%
+    set "ELEVATED_EXIT_CODE=!errorlevel!"
+    exit /b !ELEVATED_EXIT_CODE!
 )
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_PATH%" %*
