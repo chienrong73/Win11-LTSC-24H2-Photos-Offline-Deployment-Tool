@@ -6,6 +6,7 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 BATCH = (ROOT / "Add_Photos_Offline.bat").read_text(encoding="utf-8")
 DISM = (ROOT / "Modules" / "Dism.psm1").read_text(encoding="utf-8")
+ELEVATE = (ROOT / "Modules" / "Elevate-AddPhotos.ps1").read_text(encoding="utf-8")
 
 
 def assert_contains(text: str, needle: str, message: str) -> None:
@@ -16,16 +17,31 @@ def assert_contains(text: str, needle: str, message: str) -> None:
 def test_batch_elevation_preserves_arguments_and_exit_code() -> None:
     assert_contains(
         BATCH,
-        'set "ELEVATED_COMMAND=""%~f0"" %*"',
-        "elevation must relaunch the batch file with the original %* arguments",
+        'Modules\\Elevate-AddPhotos.ps1" -ScriptPath "%SCRIPT_PATH%" %*',
+        "elevation must hand the original %* arguments to the elevation helper",
     )
     assert_contains(
-        BATCH,
-        "Start-Process -FilePath 'cmd.exe' -Verb RunAs -Wait -PassThru",
+        ELEVATE,
+        "[Parameter(ValueFromRemainingArguments = $true)]",
+        "elevation helper must capture all remaining script arguments",
+    )
+    assert_contains(
+        ELEVATE,
+        "ConvertTo-Json -InputObject $ScriptArgument -Compress",
+        "elevation helper must serialize arguments before elevation",
+    )
+    assert_contains(
+        ELEVATE,
+        "-EncodedCommand",
+        "elevation helper must avoid rebuilding a quoted command line from raw arguments",
+    )
+    assert_contains(
+        ELEVATE,
+        "Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru",
         "elevation must wait for the elevated process and capture it",
     )
     assert_contains(
-        BATCH,
+        ELEVATE,
         "exit $process.ExitCode",
         "elevation must return the elevated process exit code to the caller",
     )
