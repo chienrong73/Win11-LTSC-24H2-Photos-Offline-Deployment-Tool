@@ -11,6 +11,7 @@ ADD_PHOTOS = (ROOT / "Add_Photos.ps1").read_text(encoding="utf-8")
 CONFIG = (ROOT / "Config.ps1").read_text(encoding="utf-8")
 PACKAGE = (ROOT / "Modules" / "Package.psm1").read_text(encoding="utf-8-sig")
 VALIDATION = (ROOT / "Modules" / "Validation.psm1").read_text(encoding="utf-8-sig")
+LOGGER = (ROOT / "Modules" / "Logger.psm1").read_text(encoding="utf-8")
 
 
 def assert_contains(text: str, needle: str, message: str) -> None:
@@ -91,6 +92,34 @@ def test_add_photos_exits_with_script_exit_code() -> None:
     )
     if "$host.SetShouldExit($exitCode)" in ADD_PHOTOS:
         raise AssertionError("Add_Photos.ps1 must not rely on SetShouldExit when the elevation helper needs the process exit code")
+
+
+def test_logger_cleanup_is_public_idempotent_and_non_masking() -> None:
+    assert_contains(LOGGER, "function Close-Logger {", "Logger module must implement Close-Logger")
+    export_line = next((line for line in LOGGER.splitlines() if line.startswith("Export-ModuleMember -Function")), "")
+    assert "'Close-Logger'" in export_line, "Logger module must export Close-Logger"
+    assert_contains(LOGGER, "$wasInitialized = [bool]$script:LoggerState['Initialized']", "Close-Logger must tolerate uninitialized state")
+    assert_contains(LOGGER, "Logger finalization failed:", "Close-Logger must handle finalization failures safely")
+    assert_contains(LOGGER, "finally {", "Close-Logger must reset state even if final logging fails")
+    assert_contains(ADD_PHOTOS, "Logger\\Close-Logger", "Add_Photos must call the exported logger cleanup function")
+    cleanup = ADD_PHOTOS.split("finally {", 1)[1]
+    assert_contains(cleanup, "try {", "logger cleanup must be guarded")
+    assert_contains(cleanup, "catch {", "logger cleanup failures must not mask deployment failures")
+    assert cleanup.index("catch {") < cleanup.index("exit $exitCode"), "deployment exit code must be preserved after cleanup failure"
+
+
+def test_add_photos_direct_calls_are_exported() -> None:
+    required_exports = {
+        "Logger": ["Initialize-Logger", "Write-Header", "Write-Fatal", "Write-Success", "Close-Logger"],
+        "Validation": ["Invoke-PreDeploymentValidation"],
+        "Package": ["Invoke-PackagePreparation"],
+        "Dism": ["Invoke-OfflineDeployment"],
+    }
+    module_text = {"Logger": LOGGER, "Validation": VALIDATION, "Package": PACKAGE, "Dism": DISM}
+    for module, functions in required_exports.items():
+        export_line = next((line for line in module_text[module].splitlines() if line.startswith("Export-ModuleMember -Function")), "")
+        for function in functions:
+            assert f"'{function}'" in export_line, f"{module}.psm1 must export {function}"
 
 
 def select_newest_photos(filenames: list[str]) -> str | None:
@@ -194,6 +223,8 @@ def main() -> None:
         test_batch_elevation_preserves_arguments_and_exit_code,
         test_batch_preserves_spaces_metacharacters_and_exclamation_marks,
         test_add_photos_exits_with_script_exit_code,
+        test_logger_cleanup_is_public_idempotent_and_non_masking,
+        test_add_photos_direct_calls_are_exported,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
         test_no_commit_reports_false,
