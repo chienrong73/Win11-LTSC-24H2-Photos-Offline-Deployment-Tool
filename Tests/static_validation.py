@@ -117,16 +117,21 @@ def test_logger_cleanup_is_public_idempotent_and_non_masking() -> None:
     assert_contains(ADD_PHOTOS, "Write-Error -ErrorRecord $deploymentError", "script execution must display the original deployment error")
 
 
-def test_close_logger_runtime_after_path_import_when_available() -> None:
+def test_project_module_runtime_after_path_import_when_available() -> bool:
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
     if not powershell:
-        return
+        return False
 
-    logger_path = ROOT / "Modules" / "Logger.psm1"
+    script_path = ROOT / "Add_Photos.ps1"
     command = (
         "$ErrorActionPreference = 'Stop'; "
-        f"Import-Module -LiteralPath '{str(logger_path).replace(chr(39), chr(39)*2)}' -Force; "
         "if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Windows PowerShell 5.1 is required.' }; "
+        f"$scriptText = Get-Content -LiteralPath '{str(script_path).replace(chr(39), chr(39)*2)}' -Raw; "
+        "$importBlock = [regex]::Match($scriptText, '(?s)\\$projectModulePaths = .*?(?=\\$exitCode = 1)').Value; "
+        "if ([string]::IsNullOrWhiteSpace($importBlock)) { throw 'Add_Photos module import block was not found.' }; "
+        f"$moduleRoot = '{str(ROOT / 'Modules').replace(chr(39), chr(39)*2)}'; Invoke-Expression $importBlock; "
+        "$required = @('Initialize-Logger','Write-Fatal','Close-Logger','Invoke-PreDeploymentValidation','Invoke-PackagePreparation','Invoke-OfflineDeployment'); "
+        "foreach ($name in $required) { if (-not (Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue)) { throw ('Missing command: ' + $name) } }; "
         "Close-Logger; Close-Logger"
     )
     result = subprocess.run(
@@ -136,7 +141,19 @@ def test_close_logger_runtime_after_path_import_when_available() -> None:
         check=False,
     )
     if result.returncode != 0:
-        raise AssertionError(f"Close-Logger failed after path import: {result.stderr.strip()}")
+        raise AssertionError(f"project module commands failed in a fresh PowerShell process: {result.stderr.strip()}")
+    return True
+
+
+def test_project_module_import_contract_is_explicit() -> None:
+    assert_contains(ADD_PHOTOS, "Import-Module -Name $modulePath -Force -Global -ErrorAction Stop", "project modules must be visible to the full script invocation")
+    assert_contains(ADD_PHOTOS, "$requiredCommands = @(", "Add_Photos must define its required command contract")
+    for command in (
+        "Initialize-Logger", "Write-Header", "Write-Fatal", "Write-Success", "Close-Logger",
+        "Invoke-PreDeploymentValidation", "Invoke-PackagePreparation", "Invoke-OfflineDeployment",
+    ):
+        assert f"'{command}'" in ADD_PHOTOS, f"module command contract must include {command}"
+    assert_contains(ADD_PHOTOS, "Project module import did not expose required command(s):", "missing commands must produce a diagnostic error")
 
 
 def test_add_photos_direct_calls_are_exported() -> None:
@@ -255,7 +272,7 @@ def main() -> None:
         test_batch_preserves_spaces_metacharacters_and_exclamation_marks,
         test_add_photos_exits_with_script_exit_code,
         test_logger_cleanup_is_public_idempotent_and_non_masking,
-        test_close_logger_runtime_after_path_import_when_available,
+        test_project_module_import_contract_is_explicit,
         test_add_photos_direct_calls_are_exported,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
@@ -266,6 +283,11 @@ def main() -> None:
     for test in tests:
         test()
         print(f"PASS {test.__name__}")
+
+    if test_project_module_runtime_after_path_import_when_available():
+        print("PASS test_project_module_runtime_after_path_import_when_available")
+    else:
+        print("SKIP test_project_module_runtime_after_path_import_when_available (Windows PowerShell 5.1 is unavailable)")
 
 
 if __name__ == "__main__":
