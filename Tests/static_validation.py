@@ -51,19 +51,33 @@ def test_batch_elevation_preserves_arguments_and_exit_code() -> None:
     )
     assert_contains(
         BATCH,
-        "setlocal EnableDelayedExpansion",
-        "batch file must enable delayed expansion for exit code reads inside the elevation block",
+        "setlocal DisableDelayedExpansion",
+        "batch file must keep delayed expansion disabled while reading paths and forwarding arguments",
     )
+    if "EnableDelayedExpansion" in BATCH:
+        raise AssertionError("delayed expansion must not be enabled while %~dp0 or %* is expanded")
     assert_contains(
         BATCH,
-        "exit /b !ELEVATED_EXIT_CODE!",
-        "batch file must return the actual elevated helper exit code, not stale %errorlevel%",
+        'set "ELEVATED_EXIT_CODE=%errorlevel%"\nexit /b %ELEVATED_EXIT_CODE%',
+        "batch file must capture and return the helper exit code outside a parenthesized block",
     )
     assert_contains(
         BATCH,
         'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_PATH%" %*',
         "the elevated batch path must forward all original arguments to Add_Photos.ps1",
     )
+
+
+def test_batch_preserves_spaces_metacharacters_and_exclamation_marks() -> None:
+    assert_contains(BATCH, 'set "SCRIPT_DIR=%~dp0"', "script directory must be read with delayed expansion disabled")
+    assert_contains(BATCH, '-File "%SCRIPT_DIR%Modules\\Elevate-AddPhotos.ps1"', "helper path containing spaces or ! must be quoted")
+    assert_contains(BATCH, '-ScriptPath "%SCRIPT_PATH%" %*', "quoted script path and original argument spelling must be preserved")
+
+    script_path = r"C:\Deployment! Tools\Add_Photos.ps1"
+    forwarded_arguments = r'-PackageRoot "C:\Packages! & Tools" -ImagePath "C:\Images\LTSC 24H2.wim"'
+    assert "!" in script_path and " " in script_path
+    assert "!" in forwarded_arguments and " " in forwarded_arguments and "&" in forwarded_arguments
+    assert "%*" in BATCH, "batch forwarding must retain the caller's original quoting and metacharacter escaping"
 
 
 def test_add_photos_exits_with_script_exit_code() -> None:
@@ -175,6 +189,7 @@ def main() -> None:
     ]
     pr4_regression_tests = [
         test_batch_elevation_preserves_arguments_and_exit_code,
+        test_batch_preserves_spaces_metacharacters_and_exclamation_marks,
         test_add_photos_exits_with_script_exit_code,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
