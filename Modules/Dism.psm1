@@ -139,16 +139,33 @@ function Invoke-OfflineDeployment {
         [Parameter()][bool]$AutoUnmount = $true
     )
     $mountedHere = $false
+    $committed = $false
     try {
-        if (-not (Test-MountState -MountPath $MountPath)) {
+        $wasMounted = Test-MountState -MountPath $MountPath
+        if (-not $wasMounted) {
             Mount-WindowsImage -ImagePath $ImagePath -MountPath $MountPath -Index $Index -WhatIf:$WhatIfPreference | Out-Null
             $mountedHere = -not $WhatIfPreference
         }
         foreach ($dependency in $DependencyPackagePath) { Add-OfflinePackage -MountPath $MountPath -PackagePath $dependency -WhatIf:$WhatIfPreference | Out-Null }
         Add-OfflinePackage -MountPath $MountPath -PackagePath $PhotosPackagePath -WhatIf:$WhatIfPreference | Out-Null
-        if ($CommitOnSuccess -and -not $AutoUnmount) { Save-WindowsImage -MountPath $MountPath -WhatIf:$WhatIfPreference | Out-Null }
-        if ($AutoUnmount -and $mountedHere) { Dismount-WindowsImage -MountPath $MountPath -Save:$CommitOnSuccess -WhatIf:$WhatIfPreference | Out-Null; $mountedHere = $false }
-        return [pscustomobject]@{ Succeeded = $true; ImagePath = $ImagePath; MountPath = $MountPath; Committed = $CommitOnSuccess; Timestamp = Get-Date }
+
+        if ($CommitOnSuccess) {
+            if ($AutoUnmount -and $mountedHere) {
+                Dismount-WindowsImage -MountPath $MountPath -Save -WhatIf:$WhatIfPreference | Out-Null
+                $committed = -not $WhatIfPreference
+                $mountedHere = $false
+            }
+            else {
+                Save-WindowsImage -MountPath $MountPath -WhatIf:$WhatIfPreference | Out-Null
+                $committed = -not $WhatIfPreference
+            }
+        }
+        elseif ($AutoUnmount -and $mountedHere) {
+            Dismount-WindowsImage -MountPath $MountPath -WhatIf:$WhatIfPreference | Out-Null
+            $mountedHere = $false
+        }
+
+        return [pscustomobject]@{ Succeeded = $true; ImagePath = $ImagePath; MountPath = $MountPath; Committed = $committed; Timestamp = Get-Date }
     }
     catch {
         Write-Fatal -Message ("Offline deployment failed: {0}" -f $_.Exception.Message) -Component 'Dism'

@@ -40,8 +40,8 @@ $Global:PhotosDeploymentConfig = [ordered]@{
     }
     Package     = [ordered]@{
         RootPath         = Join-Path -Path $PSScriptRoot -ChildPath 'Packages'
-        PhotosFilter     = '*Microsoft.Windows.Photos*.appxbundle'
-        DependencyFilter = '*.appx'
+        PhotosFilters     = @('*Microsoft.Windows.Photos*.appxbundle', '*Microsoft.Windows.Photos*.msixbundle')
+        DependencyFilters = @('*.appx', '*.msix')
     }
     Logging     = [ordered]@{
         EnableConsole = $true
