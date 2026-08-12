@@ -142,7 +142,7 @@ function Get-PackageFilesByFilter {
         Package root path to search.
 
     .PARAMETER Filter
-        File filter to apply.
+        One or more file filters to apply.
 
     .OUTPUTS
         System.IO.FileInfo[]
@@ -156,7 +156,7 @@ function Get-PackageFilesByFilter {
 
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
-        [string]
+        [string[]]
         $Filter
     )
 
@@ -164,7 +164,17 @@ function Get-PackageFilesByFilter {
         Invoke-PackageError -Message ('Package root path does not exist: {0}' -f $RootPath)
     }
 
-    return @(Get-ChildItem -LiteralPath $RootPath -Filter $Filter -File -ErrorAction Stop | Where-Object { Test-SupportedPackageExtension -Path $_.FullName })
+    $filesByPath = @{}
+
+    foreach ($currentFilter in $Filter) {
+        foreach ($file in (Get-ChildItem -LiteralPath $RootPath -Filter $currentFilter -File -ErrorAction Stop)) {
+            if (Test-SupportedPackageExtension -Path $file.FullName) {
+                $filesByPath[$file.FullName] = $file
+            }
+        }
+    }
+
+    return @($filesByPath.Values | Sort-Object -Property FullName)
 }
 
 function Get-ZipEntries {
@@ -207,29 +217,52 @@ function Get-PhotosPackage {
         Gets Microsoft Photos package files.
 
     .DESCRIPTION
-        Discovers supported Microsoft Photos AppX/MSIX package files using the configured
-        package root path and PhotosFilter value.
+        Discovers supported Microsoft Photos bundle files, validates their package identities
+        and versions, and returns only the newest valid package.
 
     .OUTPUTS
-        System.IO.FileInfo[]
+        System.IO.FileInfo
     #>
     [CmdletBinding()]
     param()
 
     $config = Get-PackageConfig
-    $packages = Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string]$config.Package.PhotosFilter)
+    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.PhotosFilters))
+    $validPackages = @()
 
-    if ($packages.Count -eq 0) {
-        Write-Warning -Message 'No Microsoft Photos package files were found.' -Component 'Package'
-    }
-    elseif ($packages.Count -gt 1) {
-        Write-Warning -Message ('Multiple Microsoft Photos package files were found: {0}' -f $packages.Count) -Component 'Package'
-    }
-    else {
-        Write-Info -Message ('Found Microsoft Photos package: {0}' -f $packages[0].FullName) -Component 'Package'
+    foreach ($package in $packages) {
+        try {
+            $manifest = Get-PackageManifest -PackagePath $package.FullName
+            $identity = $manifest.Package.Identity
+
+            if (-not $identity) {
+                $identity = $manifest.Bundle.Identity
+            }
+
+            if (-not $identity -or [string]$identity.Name -ine 'Microsoft.Windows.Photos') {
+                Write-Warning -Message ('Ignoring package whose identity is not Microsoft.Windows.Photos: {0}' -f $package.FullName) -Component 'Package'
+                continue
+            }
+
+            $validPackages += [pscustomobject]@{
+                File    = $package
+                Version = Get-PackageVersion -Manifest $manifest
+            }
+        }
+        catch {
+            Write-Warning -Message ('Ignoring invalid Microsoft Photos package {0}: {1}' -f $package.FullName, $_.Exception.Message) -Component 'Package'
+        }
     }
 
-    return $packages
+    if ($validPackages.Count -eq 0) {
+        Write-Warning -Message 'No valid Microsoft Photos package files were found.' -Component 'Package'
+        return @()
+    }
+
+    $selected = $validPackages | Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }, @{ Expression = { $_.File.FullName }; Descending = $false } | Select-Object -First 1
+    Write-Info -Message ('Selected Microsoft Photos package {0} (version {1}) from {2} valid candidate(s).' -f $selected.File.FullName, $selected.Version, $validPackages.Count) -Component 'Package'
+
+    return $selected.File
 }
 
 function Get-DependencyPackages {
@@ -239,7 +272,7 @@ function Get-DependencyPackages {
 
     .DESCRIPTION
         Discovers supported dependency AppX/MSIX package files using the configured package
-        root path and DependencyFilter value.
+        root path and DependencyFilters values. Microsoft Photos itself is excluded.
 
     .OUTPUTS
         System.IO.FileInfo[]
@@ -248,7 +281,8 @@ function Get-DependencyPackages {
     param()
 
     $config = Get-PackageConfig
-    $packages = Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string]$config.Package.DependencyFilter)
+    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.DependencyFilters) |
+        Where-Object { $_.BaseName -notlike 'Microsoft.Windows.Photos*' })
 
     if ($packages.Count -eq 0) {
         Write-Warning -Message 'No dependency package files were found.' -Component 'Package'

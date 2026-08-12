@@ -353,8 +353,8 @@ function Test-RequiredPackages {
 
     .DESCRIPTION
         Validates that the configured package root contains at least one Microsoft Photos
-        package matching PhotosFilter and at least one dependency package matching
-        DependencyFilter.
+        package matching PhotosFilters and at least one dependency package matching
+        DependencyFilters.
 
     .OUTPUTS
         System.Collections.Specialized.OrderedDictionary
@@ -364,8 +364,8 @@ function Test-RequiredPackages {
 
     $config = Get-ValidationConfig
     $rootPath = [string]$config.Package.RootPath
-    $photosFilter = [string]$config.Package.PhotosFilter
-    $dependencyFilter = [string]$config.Package.DependencyFilter
+    $photosFilters = [string[]]$config.Package.PhotosFilters
+    $dependencyFilters = [string[]]$config.Package.DependencyFilters
 
     if (-not (Test-PathExists -Path $rootPath -PathType Container)) {
         $message = 'Package root path does not exist: {0}' -f $rootPath
@@ -374,14 +374,30 @@ function Test-RequiredPackages {
         return $result
     }
 
-    $photosPackages = @(Get-ChildItem -LiteralPath $rootPath -Filter $photosFilter -File -ErrorAction SilentlyContinue)
-    $dependencyPackages = @(Get-ChildItem -LiteralPath $rootPath -Filter $dependencyFilter -File -ErrorAction SilentlyContinue)
+    $photosByPath = @{}
+    foreach ($filter in $photosFilters) {
+        foreach ($package in (Get-ChildItem -LiteralPath $rootPath -Filter $filter -File -ErrorAction SilentlyContinue)) {
+            $photosByPath[$package.FullName] = $package
+        }
+    }
+
+    $dependenciesByPath = @{}
+    foreach ($filter in $dependencyFilters) {
+        foreach ($package in (Get-ChildItem -LiteralPath $rootPath -Filter $filter -File -ErrorAction SilentlyContinue)) {
+            if ($package.BaseName -notlike 'Microsoft.Windows.Photos*') {
+                $dependenciesByPath[$package.FullName] = $package
+            }
+        }
+    }
+
+    $photosPackages = @($photosByPath.Values | Sort-Object -Property FullName)
+    $dependencyPackages = @($dependenciesByPath.Values | Sort-Object -Property FullName)
     $passed = ($photosPackages.Count -gt 0 -and $dependencyPackages.Count -gt 0)
     $details = [ordered]@{
         RootPath          = $rootPath
-        PhotosFilter      = $photosFilter
+        PhotosFilters     = $photosFilters
         PhotosPackages    = @($photosPackages.FullName)
-        DependencyFilter  = $dependencyFilter
+        DependencyFilters = $dependencyFilters
         DependencyPackages = @($dependencyPackages.FullName)
     }
     $message = 'Found {0} Photos package(s) and {1} dependency package(s).' -f $photosPackages.Count, $dependencyPackages.Count
