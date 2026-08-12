@@ -2,6 +2,8 @@
 """Static validations for package discovery, elevation, and mount ownership semantics."""
 from pathlib import Path
 import re
+import shutil
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 BATCH = (ROOT / "Add_Photos_Offline.bat").read_text(encoding="utf-8")
@@ -92,6 +94,8 @@ def test_add_photos_exits_with_script_exit_code() -> None:
     )
     if "$host.SetShouldExit($exitCode)" in ADD_PHOTOS:
         raise AssertionError("Add_Photos.ps1 must not rely on SetShouldExit when the elevation helper needs the process exit code")
+    assert_contains(ADD_PHOTOS, "$exitCode = 0", "successful deployment must return exit code zero")
+    assert_contains(ADD_PHOTOS, "$exitCode = 1", "failed deployment must retain a nonzero default exit code")
 
 
 def test_logger_cleanup_is_public_idempotent_and_non_masking() -> None:
@@ -101,11 +105,38 @@ def test_logger_cleanup_is_public_idempotent_and_non_masking() -> None:
     assert_contains(LOGGER, "$wasInitialized = [bool]$script:LoggerState['Initialized']", "Close-Logger must tolerate uninitialized state")
     assert_contains(LOGGER, "Logger finalization failed:", "Close-Logger must handle finalization failures safely")
     assert_contains(LOGGER, "finally {", "Close-Logger must reset state even if final logging fails")
-    assert_contains(ADD_PHOTOS, "Logger\\Close-Logger", "Add_Photos must call the exported logger cleanup function")
+    assert_contains(ADD_PHOTOS, "Close-Logger", "Add_Photos must call the exported logger cleanup function")
+    if "Logger\\Close-Logger" in ADD_PHOTOS:
+        raise AssertionError("cleanup must not use module qualification that triggers PSModulePath discovery")
     cleanup = ADD_PHOTOS.split("finally {", 1)[1]
     assert_contains(cleanup, "try {", "logger cleanup must be guarded")
     assert_contains(cleanup, "catch {", "logger cleanup failures must not mask deployment failures")
-    assert cleanup.index("catch {") < cleanup.index("exit $exitCode"), "deployment exit code must be preserved after cleanup failure"
+    assert "exit $exitCode" not in cleanup.split("}", 2)[0], "finally must not exit and suppress the deployment exception"
+    assert_contains(ADD_PHOTOS, "$deploymentError = $_", "the original deployment ErrorRecord must be retained")
+    assert_contains(ADD_PHOTOS, "throw $deploymentError", "dot-sourcing must rethrow the original deployment error")
+    assert_contains(ADD_PHOTOS, "Write-Error -ErrorRecord $deploymentError", "script execution must display the original deployment error")
+
+
+def test_close_logger_runtime_after_path_import_when_available() -> None:
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        return
+
+    logger_path = ROOT / "Modules" / "Logger.psm1"
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f"Import-Module -LiteralPath '{str(logger_path).replace(chr(39), chr(39)*2)}' -Force; "
+        "if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Windows PowerShell 5.1 is required.' }; "
+        "Close-Logger; Close-Logger"
+    )
+    result = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"Close-Logger failed after path import: {result.stderr.strip()}")
 
 
 def test_add_photos_direct_calls_are_exported() -> None:
@@ -224,6 +255,7 @@ def main() -> None:
         test_batch_preserves_spaces_metacharacters_and_exclamation_marks,
         test_add_photos_exits_with_script_exit_code,
         test_logger_cleanup_is_public_idempotent_and_non_masking,
+        test_close_logger_runtime_after_path_import_when_available,
         test_add_photos_direct_calls_are_exported,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
