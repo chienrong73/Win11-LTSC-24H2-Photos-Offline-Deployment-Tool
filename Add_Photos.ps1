@@ -38,6 +38,7 @@ Import-Module (Join-Path $moduleRoot 'Package.psm1') -Force
 Import-Module (Join-Path $moduleRoot 'Dism.psm1') -Force
 
 $exitCode = 1
+$deploymentError = $null
 try {
     Test-DeploymentConfig | Out-Null
     Initialize-Logger -EnableConsole $config.Logging.EnableConsole -EnableFile $config.Logging.EnableFile -LogFolder $config.Logging.LogFolder -LogFileName $config.Logging.LogFileName -LogLevel $config.Logging.LogLevel | Out-Null
@@ -66,15 +67,29 @@ try {
     $exitCode = 0
 }
 catch {
-    Write-Fatal -Message $_.Exception.Message -Component 'Deployment'
-    throw
+    $deploymentError = $_
+    try {
+        Write-Fatal -Message $deploymentError.Exception.Message -Component 'Deployment'
+    }
+    catch {
+        Microsoft.PowerShell.Utility\Write-Warning -Message ('Unable to log deployment failure: {0}' -f $_.Exception.Message)
+    }
 }
 finally {
     try {
-        Logger\Close-Logger
+        Close-Logger
     }
     catch {
         Microsoft.PowerShell.Utility\Write-Warning -Message ('Logger cleanup failed: {0}' -f $_.Exception.Message)
     }
-    if ($MyInvocation.InvocationName -ne '.') { exit $exitCode }
 }
+
+if ($deploymentError) {
+    if ($MyInvocation.InvocationName -eq '.') {
+        throw $deploymentError
+    }
+
+    Microsoft.PowerShell.Utility\Write-Error -ErrorRecord $deploymentError -ErrorAction Continue
+}
+
+if ($MyInvocation.InvocationName -ne '.') { exit $exitCode }
