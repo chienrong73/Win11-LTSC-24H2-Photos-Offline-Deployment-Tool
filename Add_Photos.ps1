@@ -31,11 +31,33 @@ if ($NoCommit) { $config.Image.CommitOnSuccess = $false }
 if ($KeepMounted) { $config.Image.AutoUnmount = $false }
 
 $moduleRoot = Join-Path -Path $PSScriptRoot -ChildPath 'Modules'
-Import-Module (Join-Path $moduleRoot 'Logger.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Common.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Validation.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Package.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Dism.psm1') -Force
+$projectModulePaths = @(
+    (Join-Path $moduleRoot 'Logger.psm1')
+    (Join-Path $moduleRoot 'Common.psm1')
+    (Join-Path $moduleRoot 'Validation.psm1')
+    (Join-Path $moduleRoot 'Package.psm1')
+    (Join-Path $moduleRoot 'Dism.psm1')
+)
+foreach ($modulePath in $projectModulePaths) {
+    Import-Module -Name $modulePath -Force -Global -ErrorAction Stop
+}
+
+$requiredCommands = @(
+    'Initialize-Logger'
+    'Write-Header'
+    'Write-Fatal'
+    'Write-Success'
+    'Close-Logger'
+    'Invoke-PreDeploymentValidation'
+    'Invoke-PackagePreparation'
+    'Invoke-OfflineDeployment'
+)
+$missingCommands = @($requiredCommands | Where-Object {
+    -not (Get-Command -Name $_ -CommandType Function -ErrorAction SilentlyContinue)
+})
+if ($missingCommands.Count -gt 0) {
+    throw ('Project module import did not expose required command(s): {0}. Module root: {1}' -f ($missingCommands -join ', '), $moduleRoot)
+}
 
 $exitCode = 1
 $deploymentError = $null
