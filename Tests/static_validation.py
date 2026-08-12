@@ -163,19 +163,25 @@ def test_no_commit_reports_false() -> None:
 
 
 def main() -> None:
-    tests = [
+    # Keep the PR #5 package-discovery coverage alongside all elevation and
+    # mount/commit regression checks inherited from PR #4.
+    package_discovery_tests = [
         test_only_appxbundle_photos,
         test_only_msixbundle_photos,
         test_mixed_photos_versions_are_accepted,
         test_newest_photos_version_is_selected_once,
         test_appx_dependencies_are_discovered,
         test_msix_dependencies_exclude_photos,
+    ]
+    pr4_regression_tests = [
         test_batch_elevation_preserves_arguments_and_exit_code,
         test_add_photos_exits_with_script_exit_code,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
         test_no_commit_reports_false,
     ]
+    tests = package_discovery_tests + pr4_regression_tests
+
     for test in tests:
         test()
         print(f"PASS {test.__name__}")
