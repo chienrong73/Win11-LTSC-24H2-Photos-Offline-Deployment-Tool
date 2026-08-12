@@ -70,6 +70,11 @@ catch {
     throw
 }
 finally {
-    Close-Logger
+    try {
+        Logger\Close-Logger
+    }
+    catch {
+        Microsoft.PowerShell.Utility\Write-Warning -Message ('Logger cleanup failed: {0}' -f $_.Exception.Message)
+    }
     if ($MyInvocation.InvocationName -ne '.') { exit $exitCode }
 }
