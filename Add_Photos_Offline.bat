@@ -1,4 +1,5 @@
 @echo off
+rem Delayed expansion must remain disabled while expanding paths and caller arguments.
 setlocal DisableDelayedExpansion
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_PATH=%SCRIPT_DIR%Add_Photos.ps1"
@@ -8,6 +9,7 @@ if not errorlevel 1 goto :RunDeployment
 
 echo Requesting administrator privileges...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%Modules\Elevate-AddPhotos.ps1" -ScriptPath "%SCRIPT_PATH%" %*
+rem This is intentionally outside a parenthesized block, so runtime errorlevel is safe to read.
 set "ELEVATED_EXIT_CODE=%errorlevel%"
 exit /b %ELEVATED_EXIT_CODE%
 

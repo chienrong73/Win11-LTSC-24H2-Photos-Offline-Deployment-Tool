@@ -61,6 +61,9 @@ def test_batch_elevation_preserves_arguments_and_exit_code() -> None:
         'set "ELEVATED_EXIT_CODE=%errorlevel%"\nexit /b %ELEVATED_EXIT_CODE%',
         "batch file must capture and return the helper exit code outside a parenthesized block",
     )
+    elevation_section = BATCH.split("echo Requesting administrator privileges...", 1)[1].split(":RunDeployment", 1)[0]
+    if "(" in elevation_section or ")" in elevation_section:
+        raise AssertionError("elevation and exit-code capture must remain outside parenthesized batch blocks")
     assert_contains(
         BATCH,
         'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_PATH%" %*',
@@ -177,8 +180,8 @@ def test_no_commit_reports_false() -> None:
 
 
 def main() -> None:
-    # Keep the PR #5 package-discovery coverage alongside all elevation and
-    # mount/commit regression checks inherited from PR #4.
+    # Conflict-resolution contract: keep PR #5 package coverage alongside every
+    # elevation and mount/commit regression inherited from PR #4 and latest main.
     package_discovery_tests = [
         test_only_appxbundle_photos,
         test_only_msixbundle_photos,
