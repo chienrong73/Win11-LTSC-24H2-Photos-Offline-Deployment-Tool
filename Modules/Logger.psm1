@@ -601,9 +601,10 @@ function Close-Logger {
         Closes the current logger session.
 
     .DESCRIPTION
-        Writes a closing message through the central Write-Log function and resets existing
-        logger state values without changing the logger state schema. If Config.ps1 enables
-        Performance.EnableStopwatch, the function also writes the total elapsed runtime.
+        Finalizes an initialized logger and resets its state without changing the logger state
+        schema. The operation is safe before initialization, after partial initialization, and
+        when called repeatedly. If Config.ps1 enables Performance.EnableStopwatch, the function
+        also writes the total elapsed runtime.
 
     .OUTPUTS
         None.
@@ -611,17 +612,37 @@ function Close-Logger {
     [CmdletBinding()]
     param()
 
-    $config = Get-LoggerDeploymentConfig
+    $wasInitialized = [bool]$script:LoggerState['Initialized']
 
-    if ($config.Performance.EnableStopwatch) {
-        $elapsed = (Get-Date) - $script:LoggerStartTime
-        Write-Log -Message ('Total runtime: {0:hh\:mm\:ss\.fff}' -f $elapsed) -Level 'Information' -Component 'Logger'
+    try {
+        if ($wasInitialized) {
+            $enableStopwatch = $false
+            try {
+                $config = Get-LoggerDeploymentConfig
+                $enableStopwatch = [bool]$config.Performance.EnableStopwatch
+            }
+            catch {
+                # Logger shutdown must not depend on configuration being available.
+                $enableStopwatch = $false
+            }
+
+            if ($enableStopwatch) {
+                $elapsed = (Get-Date) - $script:LoggerStartTime
+                Write-Log -Message ('Total runtime: {0:hh\:mm\:ss\.fff}' -f $elapsed) -Level 'Information' -Component 'Logger'
+            }
+
+            Write-Log -Message 'Logger session closed.' -Level 'Information' -Component 'Logger'
+        }
     }
-
-    Write-Log -Message 'Logger session closed.' -Level 'Information' -Component 'Logger'
-
-    $script:LoggerState['Initialized'] = $false
-    $script:LoggerState['LogFilePath'] = $null
+    catch {
+        Microsoft.PowerShell.Utility\Write-Warning -Message ('Logger finalization failed: {0}' -f $_.Exception.Message)
+    }
+    finally {
+        $script:LoggerState['Initialized'] = $false
+        $script:LoggerState['EnableFile'] = $false
+        $script:LoggerState['LogFolder'] = $null
+        $script:LoggerState['LogFilePath'] = $null
+    }
 }
 
 Export-ModuleMember -Function 'Initialize-Logger', 'Get-LoggerState', 'Test-LogLevelEnabled', 'Write-Log', 'Write-Info', 'Write-Success', 'Write-Warning', 'Write-Error', 'Write-Debug', 'Write-Fatal', 'Write-Step', 'Write-Header', 'Close-Logger'
