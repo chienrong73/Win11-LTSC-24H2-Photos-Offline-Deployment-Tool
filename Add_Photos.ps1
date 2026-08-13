@@ -31,13 +31,36 @@ if ($NoCommit) { $config.Image.CommitOnSuccess = $false }
 if ($KeepMounted) { $config.Image.AutoUnmount = $false }
 
 $moduleRoot = Join-Path -Path $PSScriptRoot -ChildPath 'Modules'
-Import-Module (Join-Path $moduleRoot 'Logger.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Common.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Validation.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Package.psm1') -Force
-Import-Module (Join-Path $moduleRoot 'Dism.psm1') -Force
+$projectModulePaths = @(
+    (Join-Path $moduleRoot 'Logger.psm1')
+    (Join-Path $moduleRoot 'Common.psm1')
+    (Join-Path $moduleRoot 'Validation.psm1')
+    (Join-Path $moduleRoot 'Package.psm1')
+    (Join-Path $moduleRoot 'Dism.psm1')
+)
+foreach ($modulePath in $projectModulePaths) {
+    Import-Module -Name $modulePath -Force -Global -ErrorAction Stop
+}
+
+$requiredCommands = @(
+    'Initialize-Logger'
+    'Write-Header'
+    'Write-Fatal'
+    'Write-Success'
+    'Close-Logger'
+    'Invoke-PreDeploymentValidation'
+    'Invoke-PackagePreparation'
+    'Invoke-OfflineDeployment'
+)
+$missingCommands = @($requiredCommands | Where-Object {
+    -not (Get-Command -Name $_ -CommandType Function -ErrorAction SilentlyContinue)
+})
+if ($missingCommands.Count -gt 0) {
+    throw ('Project module import did not expose required command(s): {0}. Module root: {1}' -f ($missingCommands -join ', '), $moduleRoot)
+}
 
 $exitCode = 1
+$deploymentError = $null
 try {
     Test-DeploymentConfig | Out-Null
     Initialize-Logger -EnableConsole $config.Logging.EnableConsole -EnableFile $config.Logging.EnableFile -LogFolder $config.Logging.LogFolder -LogFileName $config.Logging.LogFileName -LogLevel $config.Logging.LogLevel | Out-Null
@@ -66,10 +89,29 @@ try {
     $exitCode = 0
 }
 catch {
-    Write-Fatal -Message $_.Exception.Message -Component 'Deployment'
-    throw
+    $deploymentError = $_
+    try {
+        Write-Fatal -Message $deploymentError.Exception.Message -Component 'Deployment'
+    }
+    catch {
+        Microsoft.PowerShell.Utility\Write-Warning -Message ('Unable to log deployment failure: {0}' -f $_.Exception.Message)
+    }
 }
 finally {
-    Close-Logger
-    if ($MyInvocation.InvocationName -ne '.') { $host.SetShouldExit($exitCode) }
+    try {
+        Close-Logger
+    }
+    catch {
+        Microsoft.PowerShell.Utility\Write-Warning -Message ('Logger cleanup failed: {0}' -f $_.Exception.Message)
+    }
 }
+
+if ($deploymentError) {
+    if ($MyInvocation.InvocationName -eq '.') {
+        throw $deploymentError
+    }
+
+    Microsoft.PowerShell.Utility\Write-Error -ErrorRecord $deploymentError -ErrorAction Continue
+}
+
+if ($MyInvocation.InvocationName -ne '.') { exit $exitCode }

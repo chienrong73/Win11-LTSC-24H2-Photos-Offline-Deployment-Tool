@@ -33,9 +33,15 @@ $script:ModuleMetadata = [ordered]@{
 $script:LoggerModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Logger.psm1'
 $script:CommonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Common.psm1'
 $script:ValidationModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Validation.psm1'
-Import-Module -Name $script:LoggerModulePath -Force
-Import-Module -Name $script:CommonModulePath -Force
-Import-Module -Name $script:ValidationModulePath -Force
+if (-not (Get-Command -Name 'Write-Info' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:LoggerModulePath -ErrorAction Stop
+}
+if (-not (Get-Command -Name 'Test-PathExists' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:CommonModulePath -ErrorAction Stop
+}
+if (-not (Get-Command -Name 'Test-RequiredPackages' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:ValidationModulePath -ErrorAction Stop
+}
 
 function Get-PackageConfig {
     <#
@@ -142,7 +148,7 @@ function Get-PackageFilesByFilter {
         Package root path to search.
 
     .PARAMETER Filter
-        File filter to apply.
+        One or more file filters to apply.
 
     .OUTPUTS
         System.IO.FileInfo[]
@@ -156,7 +162,7 @@ function Get-PackageFilesByFilter {
 
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
-        [string]
+        [string[]]
         $Filter
     )
 
@@ -164,7 +170,17 @@ function Get-PackageFilesByFilter {
         Invoke-PackageError -Message ('Package root path does not exist: {0}' -f $RootPath)
     }
 
-    return @(Get-ChildItem -LiteralPath $RootPath -Filter $Filter -File -ErrorAction Stop | Where-Object { Test-SupportedPackageExtension -Path $_.FullName })
+    $filesByPath = @{}
+
+    foreach ($currentFilter in $Filter) {
+        foreach ($file in (Get-ChildItem -LiteralPath $RootPath -Filter $currentFilter -File -ErrorAction Stop)) {
+            if (Test-SupportedPackageExtension -Path $file.FullName) {
+                $filesByPath[$file.FullName] = $file
+            }
+        }
+    }
+
+    return @($filesByPath.Values | Sort-Object -Property FullName)
 }
 
 function Get-ZipEntries {
@@ -207,29 +223,86 @@ function Get-PhotosPackage {
         Gets Microsoft Photos package files.
 
     .DESCRIPTION
-        Discovers supported Microsoft Photos AppX/MSIX package files using the configured
-        package root path and PhotosFilter value.
+        Discovers supported Microsoft Photos bundle files, validates their package identities
+        and versions, and returns only the newest valid package.
 
     .OUTPUTS
-        System.IO.FileInfo[]
+        System.IO.FileInfo
     #>
     [CmdletBinding()]
     param()
 
     $config = Get-PackageConfig
-    $packages = Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string]$config.Package.PhotosFilter)
+    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.PhotosFilters))
+    $validPackages = @()
 
-    if ($packages.Count -eq 0) {
-        Write-Warning -Message 'No Microsoft Photos package files were found.' -Component 'Package'
-    }
-    elseif ($packages.Count -gt 1) {
-        Write-Warning -Message ('Multiple Microsoft Photos package files were found: {0}' -f $packages.Count) -Component 'Package'
-    }
-    else {
-        Write-Info -Message ('Found Microsoft Photos package: {0}' -f $packages[0].FullName) -Component 'Package'
+    foreach ($package in $packages) {
+        try {
+            $manifest = Get-PackageManifest -PackagePath $package.FullName
+            $identity = Get-PackageManifestIdentity -Manifest $manifest
+
+            if (-not $identity -or [string]$identity.Name -ine 'Microsoft.Windows.Photos') {
+                Write-Warning -Message ('Ignoring package whose identity is not Microsoft.Windows.Photos: {0}' -f $package.FullName) -Component 'Package'
+                continue
+            }
+
+            $validPackages += [pscustomobject]@{
+                File    = $package
+                Version = Get-PackageVersion -Manifest $manifest
+            }
+        }
+        catch {
+            Write-Warning -Message ('Ignoring invalid Microsoft Photos package {0}: {1}' -f $package.FullName, $_.Exception.Message) -Component 'Package'
+        }
     }
 
-    return $packages
+    if ($validPackages.Count -eq 0) {
+        Write-Warning -Message 'No valid Microsoft Photos package files were found.' -Component 'Package'
+        return @()
+    }
+
+    $selected = $validPackages | Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }, @{ Expression = { $_.File.FullName }; Descending = $false } | Select-Object -First 1
+    Write-Info -Message ('Selected Microsoft Photos package {0} (version {1}) from {2} valid candidate(s).' -f $selected.File.FullName, $selected.Version, $validPackages.Count) -Component 'Package'
+
+    return $selected.File
+}
+
+function Get-PackageManifestIdentity {
+    <#
+    .SYNOPSIS
+        Returns the Identity element from a package or bundle manifest.
+
+    .DESCRIPTION
+        Resolves the document element without relying on PowerShell's adapted XML properties.
+        AppxManifest.xml and MSIX manifests use a Package root, while AppxBundleManifest.xml
+        and MSIX bundle manifests use a Bundle root. Namespace-agnostic XPath supports both
+        formats consistently in Windows PowerShell 5.1 with StrictMode enabled.
+
+    .PARAMETER Manifest
+        Parsed package or bundle manifest XML.
+
+    .OUTPUTS
+        System.Xml.XmlElement
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [xml]
+        $Manifest
+    )
+
+    $root = $Manifest.DocumentElement
+    if (-not $root -or @('Package', 'Bundle') -notcontains $root.LocalName) {
+        Invoke-PackageError -Message 'Package manifest root must be Package or Bundle.'
+    }
+
+    $identity = $root.SelectSingleNode("*[local-name()='Identity']")
+    if (-not $identity) {
+        Invoke-PackageError -Message ('{0} manifest does not contain an Identity element.' -f $root.LocalName)
+    }
+
+    return $identity
 }
 
 function Get-DependencyPackages {
@@ -239,7 +312,7 @@ function Get-DependencyPackages {
 
     .DESCRIPTION
         Discovers supported dependency AppX/MSIX package files using the configured package
-        root path and DependencyFilter value.
+        root path and DependencyFilters values. Microsoft Photos itself is excluded.
 
     .OUTPUTS
         System.IO.FileInfo[]
@@ -248,7 +321,8 @@ function Get-DependencyPackages {
     param()
 
     $config = Get-PackageConfig
-    $packages = Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string]$config.Package.DependencyFilter)
+    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.DependencyFilters) |
+        Where-Object { $_.BaseName -notlike 'Microsoft.Windows.Photos*' })
 
     if ($packages.Count -eq 0) {
         Write-Warning -Message 'No dependency package files were found.' -Component 'Package'
@@ -484,11 +558,7 @@ function Get-PackageVersion {
         $Manifest = Get-PackageManifest -PackagePath $PackagePath
     }
 
-    $identity = $Manifest.Package.Identity
-
-    if (-not $identity) {
-        $identity = $Manifest.Bundle.Identity
-    }
+    $identity = Get-PackageManifestIdentity -Manifest $Manifest
 
     if (-not $identity -or -not $identity.Version) {
         Invoke-PackageError -Message 'Package manifest does not contain an Identity Version value.'
@@ -573,6 +643,22 @@ function Invoke-PackagePreparation {
     $requiredPackageValidation = Test-RequiredPackages
     $photosPackages = @(Get-PhotosPackage)
     $dependencyPackages = @(Get-DependencyPackages)
+
+    if ($photosPackages.Count -eq 0) {
+        Write-Fatal -Message 'Package preparation cannot continue because no valid Microsoft Photos package was found.' -Component 'Package'
+
+        return [ordered]@{
+            Passed                    = $false
+            DestinationPath           = $DestinationPath
+            RequiredPackageValidation = $requiredPackageValidation
+            PhotosPackages            = @()
+            DependencyPackages        = @($dependencyPackages | ForEach-Object { $_.FullName })
+            IntegrityResults          = @()
+            CopiedPackages            = @()
+            Timestamp                 = Get-Timestamp -Format 'yyyy-MM-dd HH:mm:ss K'
+        }
+    }
+
     $allPackages = @($photosPackages + $dependencyPackages)
     $integrityResults = @()
 
@@ -604,10 +690,10 @@ function Invoke-PackagePreparation {
         Passed                    = $passed
         DestinationPath           = $DestinationPath
         RequiredPackageValidation = $requiredPackageValidation
-        PhotosPackages            = @($photosPackages.FullName)
-        DependencyPackages        = @($dependencyPackages.FullName)
+        PhotosPackages            = @($photosPackages | ForEach-Object { $_.FullName })
+        DependencyPackages        = @($dependencyPackages | ForEach-Object { $_.FullName })
         IntegrityResults          = $integrityResults
-        CopiedPackages            = @($copiedPackages.FullName)
+        CopiedPackages            = @($copiedPackages | ForEach-Object { $_.FullName })
         Timestamp                 = Get-Timestamp -Format 'yyyy-MM-dd HH:mm:ss K'
     }
 
