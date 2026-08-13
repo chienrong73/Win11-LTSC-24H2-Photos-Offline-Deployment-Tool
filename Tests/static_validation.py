@@ -317,6 +317,30 @@ def get_invoke_offline_deployment_body() -> str:
     return match.group("body")
 
 
+def get_invoke_dism_executable_body() -> str:
+    match = re.search(r"function Invoke-DismExecutable \{(?P<body>.*?)\n\}\n\nfunction Mount-WindowsImage", DISM, re.S)
+    if not match:
+        raise AssertionError("Invoke-DismExecutable function body was not found")
+    return match.group("body")
+
+
+def test_dism_output_logging_skips_blank_lines() -> None:
+    body = get_invoke_dism_executable_body()
+    assert_contains(body, "$text = [string]$line", "DISM output must safely normalize null lines to strings")
+    assert_contains(body, "[string]::IsNullOrWhiteSpace($text)", "DISM output logging must skip empty and whitespace-only lines")
+    assert_contains(body, "Write-Debug -Message $text -Component 'Dism'", "nonblank DISM output must still be written to the debug log")
+    guard_position = body.index("[string]::IsNullOrWhiteSpace($text)")
+    log_position = body.index("Write-Debug -Message $text")
+    assert guard_position < log_position, "blank-line filtering must occur before Write-Debug"
+
+
+def test_dism_exit_code_contract_is_preserved() -> None:
+    body = get_invoke_dism_executable_body()
+    assert_contains(body, "$exitCode -notin @(0, 3010)", "DISM must accept only success and restart-required exit codes")
+    assert_contains(body, "$exitCode -eq 3010", "DISM exit code 3010 must retain restart-required handling")
+    assert_contains(body, "RestartRequired = ($exitCode -eq 3010)", "DISM results must report restart-required state")
+
+
 def test_new_mount_is_committed_and_dismounted() -> None:
     body = get_invoke_offline_deployment_body()
     assert_contains(body, "if ($AutoUnmount -and $mountedHere)", "new mounts must use the auto-unmount path")
@@ -366,6 +390,8 @@ def main() -> None:
         test_project_module_import_contract_is_explicit,
         test_module_dependencies_do_not_force_reload,
         test_add_photos_direct_calls_are_exported,
+        test_dism_output_logging_skips_blank_lines,
+        test_dism_exit_code_contract_is_preserved,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
         test_no_commit_reports_false,
