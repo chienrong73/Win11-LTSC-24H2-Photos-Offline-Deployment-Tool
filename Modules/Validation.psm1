@@ -32,8 +32,12 @@ $script:ModuleMetadata = [ordered]@{
 
 $script:LoggerModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Logger.psm1'
 $script:CommonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Common.psm1'
-Import-Module -Name $script:LoggerModulePath -Force
-Import-Module -Name $script:CommonModulePath -Force
+if (-not (Get-Command -Name 'Write-Info' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:LoggerModulePath -ErrorAction Stop
+}
+if (-not (Get-Command -Name 'Test-PathExists' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:CommonModulePath -ErrorAction Stop
+}
 
 function Get-ValidationConfig {
     <#
