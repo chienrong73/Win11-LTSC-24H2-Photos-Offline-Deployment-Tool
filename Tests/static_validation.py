@@ -126,16 +126,16 @@ def test_project_module_runtime_after_path_import_when_available() -> bool:
     command = (
         "$ErrorActionPreference = 'Stop'; "
         "if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Windows PowerShell 5.1 is required.' }; "
-        f"$scriptText = Get-Content -LiteralPath '{str(script_path).replace(chr(39), chr(39)*2)}' -Raw; "
+        f"$scriptText = Get-Content -LiteralPath '{str(script_path).replace("'", "''")}' -Raw; "
         "$importBlock = [regex]::Match($scriptText, '(?s)\\$projectModulePaths = .*?(?=\\$exitCode = 1)').Value; "
         "if ([string]::IsNullOrWhiteSpace($importBlock)) { throw 'Add_Photos module import block was not found.' }; "
-        f"$moduleRoot = '{str(ROOT / 'Modules').replace(chr(39), chr(39)*2)}'; Invoke-Expression $importBlock; "
+        f"$moduleRoot = '{str(ROOT / "Modules").replace("'", "''")}'; Invoke-Expression $importBlock; "
         "$required = @('Initialize-Logger','Write-Fatal','Close-Logger','Invoke-PreDeploymentValidation','Invoke-PackagePreparation','Invoke-OfflineDeployment'); "
         "foreach ($name in $required) { if (-not (Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue)) { throw ('Missing command: ' + $name) } }; "
         "Close-Logger; Close-Logger"
     )
     result = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
         capture_output=True,
         text=True,
         check=False,
@@ -154,6 +154,22 @@ def test_project_module_import_contract_is_explicit() -> None:
     ):
         assert f"'{command}'" in ADD_PHOTOS, f"module command contract must include {command}"
     assert_contains(ADD_PHOTOS, "Project module import did not expose required command(s):", "missing commands must produce a diagnostic error")
+
+
+def test_module_dependencies_do_not_force_reload() -> None:
+    dependency_modules = {
+        "Common": ROOT / "Modules" / "Common.psm1",
+        "Validation": ROOT / "Modules" / "Validation.psm1",
+        "Package": ROOT / "Modules" / "Package.psm1",
+        "Dism": ROOT / "Modules" / "Dism.psm1",
+    }
+    for name, path in dependency_modules.items():
+        text = path.read_text(encoding="utf-8-sig")
+        dependency_imports = [line.strip() for line in text.splitlines() if line.strip().startswith("Import-Module")]
+        if any("-Force" in line for line in dependency_imports):
+            raise AssertionError(f"{name}.psm1 must not force-reload project dependencies")
+        assert dependency_imports, f"{name}.psm1 must retain conditional standalone dependency loading"
+        assert_contains(text, "Get-Command -Name", f"{name}.psm1 must check before importing a dependency")
 
 
 def test_add_photos_direct_calls_are_exported() -> None:
@@ -273,6 +289,7 @@ def main() -> None:
         test_add_photos_exits_with_script_exit_code,
         test_logger_cleanup_is_public_idempotent_and_non_masking,
         test_project_module_import_contract_is_explicit,
+        test_module_dependencies_do_not_force_reload,
         test_add_photos_direct_calls_are_exported,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
