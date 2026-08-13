@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Provides DISM operations for Microsoft Photos offline deployment.
 .DESCRIPTION
@@ -11,7 +11,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:LoggerModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Logger.psm1'
-Import-Module -Name $script:LoggerModulePath -Force
+if (-not (Get-Command -Name 'Write-Info' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:LoggerModulePath -ErrorAction Stop
+}
 
 function Invoke-DismExecutable {
     [CmdletBinding()]
