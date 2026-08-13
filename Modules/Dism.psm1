@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Provides DISM operations for Microsoft Photos offline deployment.
 .DESCRIPTION
@@ -26,7 +26,12 @@ function Invoke-DismExecutable {
     Write-Info -Message ("Starting DISM operation: {0}" -f $Operation) -Component 'Dism'
     $output = @(& $command.Source @ArgumentList 2>&1)
     $exitCode = $LASTEXITCODE
-    foreach ($line in $output) { Write-Debug -Message ([string]$line) -Component 'Dism' }
+    foreach ($line in $output) {
+        $text = [string]$line
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            Write-Debug -Message $text -Component 'Dism'
+        }
+    }
     if ($exitCode -notin @(0, 3010)) {
         throw ("DISM operation '{0}' failed with exit code {1}. {2}" -f $Operation, $exitCode, ($output -join [Environment]::NewLine))
     }
