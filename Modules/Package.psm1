@@ -239,11 +239,7 @@ function Get-PhotosPackage {
     foreach ($package in $packages) {
         try {
             $manifest = Get-PackageManifest -PackagePath $package.FullName
-            $identity = $manifest.Package.Identity
-
-            if (-not $identity) {
-                $identity = $manifest.Bundle.Identity
-            }
+            $identity = Get-PackageManifestIdentity -Manifest $manifest
 
             if (-not $identity -or [string]$identity.Name -ine 'Microsoft.Windows.Photos') {
                 Write-Warning -Message ('Ignoring package whose identity is not Microsoft.Windows.Photos: {0}' -f $package.FullName) -Component 'Package'
@@ -269,6 +265,44 @@ function Get-PhotosPackage {
     Write-Info -Message ('Selected Microsoft Photos package {0} (version {1}) from {2} valid candidate(s).' -f $selected.File.FullName, $selected.Version, $validPackages.Count) -Component 'Package'
 
     return $selected.File
+}
+
+function Get-PackageManifestIdentity {
+    <#
+    .SYNOPSIS
+        Returns the Identity element from a package or bundle manifest.
+
+    .DESCRIPTION
+        Resolves the document element without relying on PowerShell's adapted XML properties.
+        AppxManifest.xml and MSIX manifests use a Package root, while AppxBundleManifest.xml
+        and MSIX bundle manifests use a Bundle root. Namespace-agnostic XPath supports both
+        formats consistently in Windows PowerShell 5.1 with StrictMode enabled.
+
+    .PARAMETER Manifest
+        Parsed package or bundle manifest XML.
+
+    .OUTPUTS
+        System.Xml.XmlElement
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [xml]
+        $Manifest
+    )
+
+    $root = $Manifest.DocumentElement
+    if (-not $root -or @('Package', 'Bundle') -notcontains $root.LocalName) {
+        Invoke-PackageError -Message 'Package manifest root must be Package or Bundle.'
+    }
+
+    $identity = $root.SelectSingleNode("*[local-name()='Identity']")
+    if (-not $identity) {
+        Invoke-PackageError -Message ('{0} manifest does not contain an Identity element.' -f $root.LocalName)
+    }
+
+    return $identity
 }
 
 function Get-DependencyPackages {
@@ -524,11 +558,7 @@ function Get-PackageVersion {
         $Manifest = Get-PackageManifest -PackagePath $PackagePath
     }
 
-    $identity = $Manifest.Package.Identity
-
-    if (-not $identity) {
-        $identity = $Manifest.Bundle.Identity
-    }
+    $identity = Get-PackageManifestIdentity -Manifest $Manifest
 
     if (-not $identity -or -not $identity.Version) {
         Invoke-PackageError -Message 'Package manifest does not contain an Identity Version value.'
@@ -613,6 +643,22 @@ function Invoke-PackagePreparation {
     $requiredPackageValidation = Test-RequiredPackages
     $photosPackages = @(Get-PhotosPackage)
     $dependencyPackages = @(Get-DependencyPackages)
+
+    if ($photosPackages.Count -eq 0) {
+        Write-Fatal -Message 'Package preparation cannot continue because no valid Microsoft Photos package was found.' -Component 'Package'
+
+        return [ordered]@{
+            Passed                    = $false
+            DestinationPath           = $DestinationPath
+            RequiredPackageValidation = $requiredPackageValidation
+            PhotosPackages            = @()
+            DependencyPackages        = @($dependencyPackages | ForEach-Object { $_.FullName })
+            IntegrityResults          = @()
+            CopiedPackages            = @()
+            Timestamp                 = Get-Timestamp -Format 'yyyy-MM-dd HH:mm:ss K'
+        }
+    }
+
     $allPackages = @($photosPackages + $dependencyPackages)
     $integrityResults = @()
 
@@ -644,10 +690,10 @@ function Invoke-PackagePreparation {
         Passed                    = $passed
         DestinationPath           = $DestinationPath
         RequiredPackageValidation = $requiredPackageValidation
-        PhotosPackages            = @($photosPackages.FullName)
-        DependencyPackages        = @($dependencyPackages.FullName)
+        PhotosPackages            = @($photosPackages | ForEach-Object { $_.FullName })
+        DependencyPackages        = @($dependencyPackages | ForEach-Object { $_.FullName })
         IntegrityResults          = $integrityResults
-        CopiedPackages            = @($copiedPackages.FullName)
+        CopiedPackages            = @($copiedPackages | ForEach-Object { $_.FullName })
         Timestamp                 = Get-Timestamp -Format 'yyyy-MM-dd HH:mm:ss K'
     }
 

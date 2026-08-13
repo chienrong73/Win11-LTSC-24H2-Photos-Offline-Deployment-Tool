@@ -4,6 +4,9 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 BATCH = (ROOT / "Add_Photos_Offline.bat").read_text(encoding="utf-8")
@@ -123,23 +126,41 @@ def test_project_module_runtime_after_path_import_when_available() -> bool:
         return False
 
     script_path = ROOT / "Add_Photos.ps1"
-    command = (
-        "$ErrorActionPreference = 'Stop'; "
-        "if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Windows PowerShell 5.1 is required.' }; "
-        f"$scriptText = Get-Content -LiteralPath '{str(script_path).replace("'", "''")}' -Raw; "
-        "$importBlock = [regex]::Match($scriptText, '(?s)\\$projectModulePaths = .*?(?=\\$exitCode = 1)').Value; "
-        "if ([string]::IsNullOrWhiteSpace($importBlock)) { throw 'Add_Photos module import block was not found.' }; "
-        f"$moduleRoot = '{str(ROOT / "Modules").replace("'", "''")}'; Invoke-Expression $importBlock; "
-        "$required = @('Initialize-Logger','Write-Fatal','Close-Logger','Invoke-PreDeploymentValidation','Invoke-PackagePreparation','Invoke-OfflineDeployment'); "
-        "foreach ($name in $required) { if (-not (Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue)) { throw ('Missing command: ' + $name) } }; "
-        "Close-Logger; Close-Logger"
-    )
-    result = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    fixtures = {
+        "dependency.appx": ("AppxManifest.xml", '<Package xmlns="urn:test:appx"><Identity Name="Dependency.Appx" Version="1.2.3.4" /></Package>'),
+        "dependency.msix": ("AppxManifest.xml", '<Package xmlns="urn:test:msix"><Identity Name="Dependency.Msix" Version="2.3.4.5" /></Package>'),
+        "photos.appxbundle": ("AppxMetadata/AppxBundleManifest.xml", '<Bundle xmlns="urn:test:appxbundle"><Identity Name="Microsoft.Windows.Photos" Version="2023.10030.27002.0" /></Bundle>'),
+        "photos.msixbundle": ("AppxMetadata/AppxBundleManifest.xml", '<Bundle xmlns="urn:test:msixbundle"><Identity Name="Microsoft.Windows.Photos" Version="2026.11060.2004.0" /></Bundle>'),
+    }
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        fixture_paths = []
+        for filename, (manifest_path, manifest) in fixtures.items():
+            fixture_path = Path(temp_dir) / filename
+            with zipfile.ZipFile(fixture_path, "w") as archive:
+                archive.writestr(manifest_path, manifest)
+            fixture_paths.append(str(fixture_path).replace("'", "''"))
+
+        powershell_fixtures = ",".join(f"'{path}'" for path in fixture_paths)
+        command = (
+            "$ErrorActionPreference = 'Stop'; "
+            "if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Windows PowerShell 5.1 is required.' }; "
+            f"$scriptText = Get-Content -LiteralPath '{str(script_path).replace("'", "''")}' -Raw; "
+            "$importBlock = [regex]::Match($scriptText, '(?s)\\$projectModulePaths = .*?(?=\\$exitCode = 1)').Value; "
+            "if ([string]::IsNullOrWhiteSpace($importBlock)) { throw 'Add_Photos module import block was not found.' }; "
+            f"$moduleRoot = '{str(ROOT / "Modules").replace("'", "''")}'; Invoke-Expression $importBlock; "
+            "$required = @('Initialize-Logger','Write-Fatal','Close-Logger','Invoke-PreDeploymentValidation','Invoke-PackagePreparation','Invoke-OfflineDeployment'); "
+            "foreach ($name in $required) { if (-not (Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue)) { throw ('Missing command: ' + $name) } }; "
+            f"$fixtures = @({powershell_fixtures}); "
+            "foreach ($fixture in $fixtures) { $manifest = Get-PackageManifest -PackagePath $fixture; $version = Get-PackageVersion -Manifest $manifest; if (-not $version) { throw ('Manifest version could not be resolved: ' + $fixture) } }; "
+            "Close-Logger; Close-Logger"
+        )
+        result = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     if result.returncode != 0:
         raise AssertionError(f"project module commands failed in a fresh PowerShell process: {result.stderr.strip()}")
     return True
@@ -170,6 +191,54 @@ def test_module_dependencies_do_not_force_reload() -> None:
             raise AssertionError(f"{name}.psm1 must not force-reload project dependencies")
         assert dependency_imports, f"{name}.psm1 must retain conditional standalone dependency loading"
         assert_contains(text, "Get-Command -Name", f"{name}.psm1 must check before importing a dependency")
+
+
+def manifest_identity(xml_text: str) -> tuple[str, str, str]:
+    """Model the namespace-agnostic Package/Bundle identity contract."""
+    root = ET.fromstring(xml_text)
+    root_name = root.tag.rsplit("}", 1)[-1]
+    if root_name not in {"Package", "Bundle"}:
+        raise AssertionError(f"unsupported manifest root: {root_name}")
+    identity = next((child for child in root if child.tag.rsplit("}", 1)[-1] == "Identity"), None)
+    if identity is None:
+        raise AssertionError("manifest identity is missing")
+    return root_name, identity.attrib["Name"], identity.attrib["Version"]
+
+
+def test_appx_manifest_identity_parsing() -> None:
+    manifest = '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Dependency.Appx" Version="1.2.3.4" /></Package>'
+    assert manifest_identity(manifest) == ("Package", "Dependency.Appx", "1.2.3.4")
+
+
+def test_msix_manifest_identity_parsing() -> None:
+    manifest = '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Dependency.Msix" Version="2.3.4.5" /></Package>'
+    assert manifest_identity(manifest) == ("Package", "Dependency.Msix", "2.3.4.5")
+
+
+def test_appxbundle_manifest_identity_parsing() -> None:
+    manifest = '<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Microsoft.Windows.Photos" Version="2023.10030.27002.0" /></Bundle>'
+    assert manifest_identity(manifest) == ("Bundle", "Microsoft.Windows.Photos", "2023.10030.27002.0")
+
+
+def test_msixbundle_manifest_identity_parsing() -> None:
+    manifest = '<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Microsoft.Windows.Photos" Version="2026.11060.2004.0" /></Bundle>'
+    assert manifest_identity(manifest) == ("Bundle", "Microsoft.Windows.Photos", "2026.11060.2004.0")
+
+
+def test_manifest_access_is_strictmode_safe() -> None:
+    assert_contains(PACKAGE, "$root = $Manifest.DocumentElement", "manifest parsing must inspect the actual XML document element")
+    assert_contains(PACKAGE, "*[local-name()='Identity']", "identity lookup must support namespaced package and bundle manifests")
+    if "$Manifest.Package.Identity" in PACKAGE or "$Manifest.Bundle.Identity" in PACKAGE:
+        raise AssertionError("manifest parsing must not access absent adapted XML properties under StrictMode")
+
+
+def test_empty_photos_result_is_safe_and_fails_preparation() -> None:
+    assert_contains(PACKAGE, "if ($photosPackages.Count -eq 0)", "package preparation must handle an empty Photos selection explicitly")
+    empty_branch = PACKAGE.split("if ($photosPackages.Count -eq 0)", 1)[1].split("$allPackages =", 1)[0]
+    assert_contains(empty_branch, "Passed                    = $false", "an empty Photos selection must fail preparation")
+    assert_contains(empty_branch, "PhotosPackages            = @()", "an empty Photos selection must be returned without property access")
+    if "$photosPackages.FullName" in PACKAGE:
+        raise AssertionError("empty Photos arrays must not use StrictMode-unsafe member enumeration")
 
 
 def test_add_photos_direct_calls_are_exported() -> None:
@@ -282,6 +351,12 @@ def main() -> None:
         test_newest_photos_version_is_selected_once,
         test_appx_dependencies_are_discovered,
         test_msix_dependencies_exclude_photos,
+        test_appx_manifest_identity_parsing,
+        test_msix_manifest_identity_parsing,
+        test_appxbundle_manifest_identity_parsing,
+        test_msixbundle_manifest_identity_parsing,
+        test_manifest_access_is_strictmode_safe,
+        test_empty_photos_result_is_safe_and_fails_preparation,
     ]
     pr4_regression_tests = [
         test_batch_elevation_preserves_arguments_and_exit_code,
