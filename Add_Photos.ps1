@@ -71,20 +71,20 @@ try {
 
     $preparation = Invoke-PackagePreparation
     if (-not $preparation.Passed) { throw 'Package preparation failed.' }
-    if (@($preparation.PhotosPackages).Count -ne 1) { throw 'Exactly one Microsoft Photos package is required.' }
+    if (@($preparation.AppPackages).Count -ne 1) { throw ('Exactly one package for {0} is required.' -f $config.Package.AppIdentity) }
 
     $invokeParameters = @{
         ImagePath            = [string]$config.Image.ImagePath
         MountPath            = [string]$config.Image.MountPath
         Index                = [int]$config.Image.Index
-        PhotosPackagePath    = [string]$preparation.PhotosPackages[0]
+        AppPackagePath       = [string]$preparation.AppPackages[0]
         DependencyPackagePath = [string[]]$preparation.DependencyPackages
         CommitOnSuccess      = [bool]$config.Image.CommitOnSuccess
         AutoUnmount          = [bool]$config.Image.AutoUnmount
         WhatIf               = [bool]$WhatIfPreference
     }
     $result = Invoke-OfflineDeployment @invokeParameters
-    Write-Success -Message 'Microsoft Photos offline deployment completed successfully.' -Component 'Deployment'
+    Write-Success -Message ('{0} offline deployment completed successfully.' -f $config.Package.AppIdentity) -Component 'Deployment'
     $result
     $exitCode = 0
 }

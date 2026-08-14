@@ -353,11 +353,11 @@ function Test-DiskSpace {
 function Test-RequiredPackages {
     <#
     .SYNOPSIS
-        Validates required Microsoft Photos package files.
+        Validates required target app package files.
 
     .DESCRIPTION
-        Validates that the configured package root contains at least one Microsoft Photos
-        package matching PhotosFilters and at least one dependency package matching
+        Validates that the configured package root contains at least one target app
+        package matching AppFilters and at least one dependency package matching
         DependencyFilters.
 
     .OUTPUTS
@@ -368,7 +368,8 @@ function Test-RequiredPackages {
 
     $config = Get-ValidationConfig
     $rootPath = [string]$config.Package.RootPath
-    $photosFilters = [string[]]$config.Package.PhotosFilters
+    $appIdentity = [string]$config.Package.AppIdentity
+    $appFilters = [string[]]$config.Package.AppFilters
     $dependencyFilters = [string[]]$config.Package.DependencyFilters
 
     if (-not (Test-PathExists -Path $rootPath -PathType Container)) {
@@ -378,33 +379,46 @@ function Test-RequiredPackages {
         return $result
     }
 
-    $photosByPath = @{}
-    foreach ($filter in $photosFilters) {
+    if ([string]::IsNullOrWhiteSpace($appIdentity)) {
+        $result = New-ValidationResult -Name 'RequiredPackages' -Passed $false -Message 'Package.AppIdentity must not be empty.'
+        Write-ValidationResultLog -Result $result
+        return $result
+    }
+
+    if ($appFilters.Count -eq 0) {
+        $result = New-ValidationResult -Name 'RequiredPackages' -Passed $false -Message 'Package.AppFilters must contain at least one filter.'
+        Write-ValidationResultLog -Result $result
+        return $result
+    }
+
+    $appsByPath = @{}
+    foreach ($filter in $appFilters) {
         foreach ($package in (Get-ChildItem -LiteralPath $rootPath -Filter $filter -File -ErrorAction SilentlyContinue)) {
-            $photosByPath[$package.FullName] = $package
+            $appsByPath[$package.FullName] = $package
         }
     }
 
     $dependenciesByPath = @{}
     foreach ($filter in $dependencyFilters) {
         foreach ($package in (Get-ChildItem -LiteralPath $rootPath -Filter $filter -File -ErrorAction SilentlyContinue)) {
-            if ($package.BaseName -notlike 'Microsoft.Windows.Photos*') {
+            if (-not ([string]$package.BaseName).StartsWith($appIdentity, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $dependenciesByPath[$package.FullName] = $package
             }
         }
     }
 
-    $photosPackages = @($photosByPath.Values | Sort-Object -Property FullName)
+    $appPackages = @($appsByPath.Values | Sort-Object -Property FullName)
     $dependencyPackages = @($dependenciesByPath.Values | Sort-Object -Property FullName)
-    $passed = ($photosPackages.Count -gt 0 -and $dependencyPackages.Count -gt 0)
+    $passed = ($appPackages.Count -gt 0 -and $dependencyPackages.Count -gt 0)
     $details = [ordered]@{
-        RootPath          = $rootPath
-        PhotosFilters     = $photosFilters
-        PhotosPackages    = @($photosPackages.FullName)
-        DependencyFilters = $dependencyFilters
+        RootPath           = $rootPath
+        AppIdentity        = $appIdentity
+        AppFilters         = $appFilters
+        AppPackages        = @($appPackages | ForEach-Object { $_.FullName })
+        DependencyFilters  = $dependencyFilters
         DependencyPackages = @($dependencyPackages.FullName)
     }
-    $message = 'Found {0} Photos package(s) and {1} dependency package(s).' -f $photosPackages.Count, $dependencyPackages.Count
+    $message = 'Found {0} package(s) for {1} and {2} dependency package(s).' -f $appPackages.Count, $appIdentity, $dependencyPackages.Count
     $result = New-ValidationResult -Name 'RequiredPackages' -Passed $passed -Message $message -Details $details
     Write-ValidationResultLog -Result $result
 

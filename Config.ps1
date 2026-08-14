@@ -39,8 +39,9 @@ $Global:PhotosDeploymentConfig = [ordered]@{
         AutoUnmount     = $true
     }
     Package     = [ordered]@{
-        RootPath         = Join-Path -Path $PSScriptRoot -ChildPath 'Packages'
-        PhotosFilters     = @('*Microsoft.Windows.Photos*.appxbundle', '*Microsoft.Windows.Photos*.msixbundle')
+        RootPath          = Join-Path -Path $PSScriptRoot -ChildPath 'Packages'
+        AppIdentity       = 'Microsoft.Windows.Photos'
+        AppFilters        = @('*Microsoft.Windows.Photos*.appxbundle', '*Microsoft.Windows.Photos*.msixbundle')
         DependencyFilters = @('*.appx', '*.msix')
     }
     Logging     = [ordered]@{
@@ -112,6 +113,14 @@ function Test-DeploymentConfig {
 
     if ([string]::IsNullOrWhiteSpace([string]$config.Package.RootPath)) {
         throw 'Deployment configuration validation failed: Package.RootPath must not be empty.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$config.Package.AppIdentity)) {
+        throw 'Deployment configuration validation failed: Package.AppIdentity must not be empty.'
+    }
+
+    if (@($config.Package.AppFilters).Count -eq 0) {
+        throw 'Deployment configuration validation failed: Package.AppFilters must contain at least one filter.'
     }
 
     if ([int]$config.Image.Index -lt 1) {

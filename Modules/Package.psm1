@@ -217,13 +217,13 @@ function Get-ZipEntries {
     }
 }
 
-function Get-PhotosPackage {
+function Get-TargetAppPackage {
     <#
     .SYNOPSIS
-        Gets Microsoft Photos package files.
+        Gets the configured target app package file.
 
     .DESCRIPTION
-        Discovers supported Microsoft Photos bundle files, validates their package identities
+        Discovers supported target app bundle files, validates their package identities
         and versions, and returns only the newest valid package.
 
     .OUTPUTS
@@ -233,7 +233,7 @@ function Get-PhotosPackage {
     param()
 
     $config = Get-PackageConfig
-    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.PhotosFilters))
+    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.AppFilters))
     $validPackages = @()
 
     foreach ($package in $packages) {
@@ -241,8 +241,8 @@ function Get-PhotosPackage {
             $manifest = Get-PackageManifest -PackagePath $package.FullName
             $identity = Get-PackageManifestIdentity -Manifest $manifest
 
-            if (-not $identity -or [string]$identity.Name -ine 'Microsoft.Windows.Photos') {
-                Write-Warning -Message ('Ignoring package whose identity is not Microsoft.Windows.Photos: {0}' -f $package.FullName) -Component 'Package'
+            if (-not $identity -or [string]$identity.Name -ine [string]$config.Package.AppIdentity) {
+                Write-Warning -Message ('Ignoring package whose identity does not match {0}: {1}' -f $config.Package.AppIdentity, $package.FullName) -Component 'Package'
                 continue
             }
 
@@ -252,17 +252,17 @@ function Get-PhotosPackage {
             }
         }
         catch {
-            Write-Warning -Message ('Ignoring invalid Microsoft Photos package {0}: {1}' -f $package.FullName, $_.Exception.Message) -Component 'Package'
+            Write-Warning -Message ('Ignoring invalid target app package {0}: {1}' -f $package.FullName, $_.Exception.Message) -Component 'Package'
         }
     }
 
     if ($validPackages.Count -eq 0) {
-        Write-Warning -Message 'No valid Microsoft Photos package files were found.' -Component 'Package'
+        Write-Warning -Message ('No valid package files were found for {0}.' -f $config.Package.AppIdentity) -Component 'Package'
         return @()
     }
 
     $selected = $validPackages | Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }, @{ Expression = { $_.File.FullName }; Descending = $false } | Select-Object -First 1
-    Write-Info -Message ('Selected Microsoft Photos package {0} (version {1}) from {2} valid candidate(s).' -f $selected.File.FullName, $selected.Version, $validPackages.Count) -Component 'Package'
+    Write-Info -Message ('Selected package {0} for {1} (version {2}) from {3} valid candidate(s).' -f $selected.File.FullName, $config.Package.AppIdentity, $selected.Version, $validPackages.Count) -Component 'Package'
 
     return $selected.File
 }
@@ -312,7 +312,7 @@ function Get-DependencyPackages {
 
     .DESCRIPTION
         Discovers supported dependency AppX/MSIX package files using the configured package
-        root path and DependencyFilters values. Microsoft Photos itself is excluded.
+        root path and DependencyFilters values. The configured target app itself is excluded.
 
     .OUTPUTS
         System.IO.FileInfo[]
@@ -322,7 +322,7 @@ function Get-DependencyPackages {
 
     $config = Get-PackageConfig
     $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.DependencyFilters) |
-        Where-Object { $_.BaseName -notlike 'Microsoft.Windows.Photos*' })
+        Where-Object { -not ([string]$_.BaseName).StartsWith([string]$config.Package.AppIdentity, [System.StringComparison]::OrdinalIgnoreCase) })
 
     if ($packages.Count -eq 0) {
         Write-Warning -Message 'No dependency package files were found.' -Component 'Package'
@@ -619,7 +619,7 @@ function Invoke-PackagePreparation {
         Runs package preparation operations.
 
     .DESCRIPTION
-        Validates required package availability, discovers Photos and dependency packages,
+        Validates required package availability, discovers the target app and dependency packages,
         validates package integrity, copies packages to a temporary preparation directory,
         and returns a complete package preparation summary.
 
@@ -641,17 +641,17 @@ function Invoke-PackagePreparation {
     Write-Info -Message 'Starting package preparation.' -Component 'Package'
 
     $requiredPackageValidation = Test-RequiredPackages
-    $photosPackages = @(Get-PhotosPackage)
+    $appPackages = @(Get-TargetAppPackage)
     $dependencyPackages = @(Get-DependencyPackages)
 
-    if ($photosPackages.Count -eq 0) {
-        Write-Fatal -Message 'Package preparation cannot continue because no valid Microsoft Photos package was found.' -Component 'Package'
+    if ($appPackages.Count -eq 0) {
+        Write-Fatal -Message ('Package preparation cannot continue because no valid package for {0} was found.' -f (Get-PackageConfig).Package.AppIdentity) -Component 'Package'
 
         return [ordered]@{
             Passed                    = $false
             DestinationPath           = $DestinationPath
             RequiredPackageValidation = $requiredPackageValidation
-            PhotosPackages            = @()
+            AppPackages               = @()
             DependencyPackages        = @($dependencyPackages | ForEach-Object { $_.FullName })
             IntegrityResults          = @()
             CopiedPackages            = @()
@@ -659,7 +659,7 @@ function Invoke-PackagePreparation {
         }
     }
 
-    $allPackages = @($photosPackages + $dependencyPackages)
+    $allPackages = @($appPackages + $dependencyPackages)
     $integrityResults = @()
 
     foreach ($package in $allPackages) {
@@ -667,7 +667,7 @@ function Invoke-PackagePreparation {
     }
 
     if (-not $PSBoundParameters.ContainsKey('DestinationPath')) {
-        $DestinationPath = Get-TempDirectory -Prefix 'PhotosPackages'
+        $DestinationPath = Get-TempDirectory -Prefix 'StoreAppPackages'
     }
     else {
         New-Directory -Path $DestinationPath | Out-Null
@@ -690,7 +690,7 @@ function Invoke-PackagePreparation {
         Passed                    = $passed
         DestinationPath           = $DestinationPath
         RequiredPackageValidation = $requiredPackageValidation
-        PhotosPackages            = @($photosPackages | ForEach-Object { $_.FullName })
+        AppPackages               = @($appPackages | ForEach-Object { $_.FullName })
         DependencyPackages        = @($dependencyPackages | ForEach-Object { $_.FullName })
         IntegrityResults          = $integrityResults
         CopiedPackages            = @($copiedPackages | ForEach-Object { $_.FullName })
@@ -707,4 +707,4 @@ function Invoke-PackagePreparation {
     return $summary
 }
 
-Export-ModuleMember -Function 'Get-PhotosPackage', 'Get-DependencyPackages', 'Test-PackageIntegrity', 'Copy-PackageFiles', 'Get-PackageManifest', 'Get-PackageVersion', 'Compare-PackageVersion', 'Invoke-PackagePreparation'
+Export-ModuleMember -Function 'Get-TargetAppPackage', 'Get-DependencyPackages', 'Test-PackageIntegrity', 'Copy-PackageFiles', 'Get-PackageManifest', 'Get-PackageVersion', 'Compare-PackageVersion', 'Invoke-PackagePreparation'

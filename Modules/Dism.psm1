@@ -139,7 +139,7 @@ function Invoke-OfflineDeployment {
     param(
         [Parameter(Mandatory = $true)][string]$ImagePath,
         [Parameter(Mandatory = $true)][string]$MountPath,
-        [Parameter(Mandatory = $true)][string]$PhotosPackagePath,
+        [Parameter(Mandatory = $true)][string]$AppPackagePath,
         [Parameter()][string[]]$DependencyPackagePath = @(),
         [Parameter()][ValidateRange(1, 65535)][int]$Index = 1,
         [Parameter()][bool]$CommitOnSuccess = $true,
@@ -154,7 +154,7 @@ function Invoke-OfflineDeployment {
             $mountedHere = -not $WhatIfPreference
         }
         foreach ($dependency in $DependencyPackagePath) { Add-OfflinePackage -MountPath $MountPath -PackagePath $dependency -WhatIf:$WhatIfPreference | Out-Null }
-        Add-OfflinePackage -MountPath $MountPath -PackagePath $PhotosPackagePath -WhatIf:$WhatIfPreference | Out-Null
+        Add-OfflinePackage -MountPath $MountPath -PackagePath $AppPackagePath -WhatIf:$WhatIfPreference | Out-Null
 
         if ($CommitOnSuccess) {
             if ($AutoUnmount -and $mountedHere) {

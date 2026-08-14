@@ -232,13 +232,32 @@ def test_manifest_access_is_strictmode_safe() -> None:
         raise AssertionError("manifest parsing must not access absent adapted XML properties under StrictMode")
 
 
-def test_empty_photos_result_is_safe_and_fails_preparation() -> None:
-    assert_contains(PACKAGE, "if ($photosPackages.Count -eq 0)", "package preparation must handle an empty Photos selection explicitly")
-    empty_branch = PACKAGE.split("if ($photosPackages.Count -eq 0)", 1)[1].split("$allPackages =", 1)[0]
-    assert_contains(empty_branch, "Passed                    = $false", "an empty Photos selection must fail preparation")
-    assert_contains(empty_branch, "PhotosPackages            = @()", "an empty Photos selection must be returned without property access")
-    if "$photosPackages.FullName" in PACKAGE:
-        raise AssertionError("empty Photos arrays must not use StrictMode-unsafe member enumeration")
+def test_empty_app_result_is_safe_and_fails_preparation() -> None:
+    assert_contains(PACKAGE, "if ($appPackages.Count -eq 0)", "package preparation must handle an empty app selection explicitly")
+    empty_branch = PACKAGE.split("if ($appPackages.Count -eq 0)", 1)[1].split("$allPackages =", 1)[0]
+    assert_contains(empty_branch, "Passed                    = $false", "an empty app selection must fail preparation")
+    assert_contains(empty_branch, "AppPackages               = @()", "an empty app selection must be returned without property access")
+    if "$appPackages.FullName" in PACKAGE:
+        raise AssertionError("empty app arrays must not use StrictMode-unsafe member enumeration")
+
+
+def test_generic_app_configuration_and_flow() -> None:
+    assert_contains(CONFIG, "AppIdentity       = 'Microsoft.Windows.Photos'", "Config must define the target app identity")
+    assert_contains(CONFIG, "AppFilters", "Config must define target app package filters")
+    assert_contains(PACKAGE, "function Get-TargetAppPackage {", "package discovery must expose a generic target-app function")
+    assert_contains(PACKAGE, "[string]$config.Package.AppIdentity", "package identity validation must use configuration")
+    assert_contains(PACKAGE, "[string[]]$config.Package.AppFilters", "package discovery must use configured app filters")
+    assert_contains(VALIDATION, "$appIdentity = [string]$config.Package.AppIdentity", "validation must use the configured app identity")
+    assert_contains(VALIDATION, "$appFilters = [string[]]$config.Package.AppFilters", "validation must use configured app filters")
+    assert_contains(ADD_PHOTOS, "$preparation.AppPackages", "entry point must use generic app package results")
+    assert_contains(DISM, "[string]$AppPackagePath", "offline deployment must use a generic app package parameter")
+    production = CONFIG + PACKAGE + VALIDATION + ADD_PHOTOS + DISM
+    for obsolete in ("PhotosFilters", "PhotosPackagePath", "Get-PhotosPackage"):
+        if obsolete in production:
+            raise AssertionError(f"production code must not depend on obsolete Photos-specific name {obsolete}")
+    for module in (PACKAGE, VALIDATION, ADD_PHOTOS, DISM):
+        if "Microsoft.Windows.Photos" in module:
+            raise AssertionError("target app identity must not be hard-coded outside Config.ps1")
 
 
 def test_add_photos_direct_calls_are_exported() -> None:
@@ -255,7 +274,7 @@ def test_add_photos_direct_calls_are_exported() -> None:
             assert f"'{function}'" in export_line, f"{module}.psm1 must export {function}"
 
 
-def select_newest_photos(filenames: list[str]) -> str | None:
+def select_newest_app(filenames: list[str]) -> str | None:
     """Model the configured extension/name/version rules for static test fixtures."""
     candidates = []
     pattern = re.compile(
@@ -269,34 +288,34 @@ def select_newest_photos(filenames: list[str]) -> str | None:
     return max(candidates, default=(None, None))[1]
 
 
-def test_only_appxbundle_photos() -> None:
+def test_only_appxbundle_app() -> None:
     assert "'*Microsoft.Windows.Photos*.appxbundle'" in CONFIG
     package = "Microsoft.Windows.Photos_2024.1.2.3_x64.appxbundle"
-    assert select_newest_photos([package]) == package
+    assert select_newest_app([package]) == package
 
 
-def test_only_msixbundle_photos() -> None:
+def test_only_msixbundle_app() -> None:
     assert "'*Microsoft.Windows.Photos*.msixbundle'" in CONFIG
     package = "Microsoft.Windows.Photos_2026.11060.2004.0_x64.msixbundle"
-    assert select_newest_photos([package]) == package
+    assert select_newest_app([package]) == package
 
 
-def test_mixed_photos_versions_are_accepted() -> None:
+def test_mixed_app_versions_are_accepted() -> None:
     packages = [
         "Microsoft.Windows.Photos_2024.1.2.3_x64.appxbundle",
         "Microsoft.Windows.Photos_2026.11060.2004.0_x64.msixbundle",
     ]
-    assert select_newest_photos(packages) is not None
-    assert_contains(PACKAGE, "$validPackages.Count -eq 0", "multiple valid Photos packages must not cause failure")
+    assert select_newest_app(packages) is not None
+    assert_contains(PACKAGE, "$validPackages.Count -eq 0", "multiple valid app packages must not cause failure")
 
 
-def test_newest_photos_version_is_selected_once() -> None:
+def test_newest_app_version_is_selected_once() -> None:
     old = "Microsoft.Windows.Photos_2024.1.2.3_x64.appxbundle"
     new = "Microsoft.Windows.Photos_2026.11060.2004.0_x64.msixbundle"
-    assert select_newest_photos([old, new]) == new
-    assert_contains(PACKAGE, "Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }", "Photos candidates must be sorted newest first")
-    assert_contains(PACKAGE, "return $selected.File", "only the selected Photos package must be returned")
-    assert_contains(ADD_PHOTOS, "PhotosPackagePath    = [string]$preparation.PhotosPackages[0]", "deployment must receive only the selected Photos package")
+    assert select_newest_app([old, new]) == new
+    assert_contains(PACKAGE, "Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }", "app candidates must be sorted newest first")
+    assert_contains(PACKAGE, "return $selected.File", "only the selected app package must be returned")
+    assert_contains(ADD_PHOTOS, "AppPackagePath       = [string]$preparation.AppPackages[0]", "deployment must receive only the selected app package")
 
 
 def test_appx_dependencies_are_discovered() -> None:
@@ -304,10 +323,10 @@ def test_appx_dependencies_are_discovered() -> None:
     assert_contains(VALIDATION, "foreach ($filter in $dependencyFilters)", "required-package validation must use every configured dependency filter")
 
 
-def test_msix_dependencies_exclude_photos() -> None:
+def test_msix_dependencies_exclude_target_app() -> None:
     assert "'*.msix'" in CONFIG
-    assert_contains(PACKAGE, "$_.BaseName -notlike 'Microsoft.Windows.Photos*'", "dependency discovery must exclude Microsoft Photos")
-    assert_contains(VALIDATION, "$package.BaseName -notlike 'Microsoft.Windows.Photos*'", "required-package validation must exclude Microsoft Photos dependencies")
+    assert_contains(PACKAGE, ".StartsWith([string]$config.Package.AppIdentity", "dependency discovery must exclude the configured target app")
+    assert_contains(VALIDATION, ".StartsWith($appIdentity", "required-package validation must exclude the configured target app")
 
 
 def get_invoke_offline_deployment_body() -> str:
@@ -369,18 +388,18 @@ def main() -> None:
     # Conflict-resolution contract: keep PR #5 package coverage alongside every
     # elevation and mount/commit regression inherited from PR #4 and latest main.
     package_discovery_tests = [
-        test_only_appxbundle_photos,
-        test_only_msixbundle_photos,
-        test_mixed_photos_versions_are_accepted,
-        test_newest_photos_version_is_selected_once,
+        test_only_appxbundle_app,
+        test_only_msixbundle_app,
+        test_mixed_app_versions_are_accepted,
+        test_newest_app_version_is_selected_once,
         test_appx_dependencies_are_discovered,
-        test_msix_dependencies_exclude_photos,
+        test_msix_dependencies_exclude_target_app,
         test_appx_manifest_identity_parsing,
         test_msix_manifest_identity_parsing,
         test_appxbundle_manifest_identity_parsing,
         test_msixbundle_manifest_identity_parsing,
         test_manifest_access_is_strictmode_safe,
-        test_empty_photos_result_is_safe_and_fails_preparation,
+        test_empty_app_result_is_safe_and_fails_preparation,
     ]
     pr4_regression_tests = [
         test_batch_elevation_preserves_arguments_and_exit_code,
@@ -389,6 +408,7 @@ def main() -> None:
         test_logger_cleanup_is_public_idempotent_and_non_masking,
         test_project_module_import_contract_is_explicit,
         test_module_dependencies_do_not_force_reload,
+        test_generic_app_configuration_and_flow,
         test_add_photos_direct_calls_are_exported,
         test_dism_output_logging_skips_blank_lines,
         test_dism_exit_code_contract_is_preserved,
