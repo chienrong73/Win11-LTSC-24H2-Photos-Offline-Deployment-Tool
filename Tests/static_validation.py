@@ -140,7 +140,7 @@ def test_project_module_runtime_after_path_import_when_available() -> bool:
         "$importBlock = [regex]::Match($scriptText, '(?s)\\$projectModulePaths = .*?(?=\\$exitCode = 1)').Value; "
         "if ([string]::IsNullOrWhiteSpace($importBlock)) { throw 'Add_Photos module import block was not found.' }; "
         f"$moduleRoot = '{str(ROOT / 'Modules').replace(chr(39), chr(39)*2)}'; Invoke-Expression $importBlock; "
-        "$required = @('Initialize-Logger','Write-Fatal','Close-Logger','Invoke-PreDeploymentValidation','Invoke-PackagePreparation','Invoke-OfflineDeployment'); "
+        "$required = @('Initialize-Logger','Write-Header','Write-Fatal','Write-Success','Close-Logger','Invoke-PreDeploymentValidation','Invoke-PackagePreparation','Invoke-OfflineDeployment'); "
         "foreach ($name in $required) { if (-not (Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue)) { throw ('Missing command: ' + $name) } }; "
         "Close-Logger; Close-Logger"
     )
@@ -164,6 +164,22 @@ def test_project_module_import_contract_is_explicit() -> None:
     ):
         assert f"'{command}'" in ADD_PHOTOS, f"module command contract must include {command}"
     assert_contains(ADD_PHOTOS, "Project module import did not expose required command(s):", "missing commands must produce a diagnostic error")
+
+
+def test_nested_dependency_imports_do_not_force_reload_global_modules() -> None:
+    dependency_modules = {
+        "Common.psm1": COMMON,
+        "Validation.psm1": VALIDATION,
+        "Package.psm1": PACKAGE,
+        "Dism.psm1": DISM,
+    }
+    for module_name, source in dependency_modules.items():
+        nested_imports = [line.strip() for line in source.splitlines() if re.search(r"\bImport-Module\b", line)]
+        if any(re.search(r"(?:^|\s)-Force(?:\s|$)", line) for line in nested_imports):
+            raise AssertionError(f"{module_name} must not force-reload a nested project dependency")
+        assert_contains(source, "Get-Command -Name 'Initialize-Logger' -CommandType Function", f"{module_name} must conditionally detect Logger")
+    for module_name, source in {"Validation.psm1": VALIDATION, "Package.psm1": PACKAGE}.items():
+        assert_contains(source, "Get-Command -Name 'Test-PathExists' -CommandType Function", f"{module_name} must conditionally detect Common")
 
 
 def test_add_photos_direct_calls_are_exported() -> None:
@@ -323,6 +339,7 @@ def main() -> None:
         test_add_photos_exits_with_script_exit_code,
         test_logger_cleanup_is_public_idempotent_and_non_masking,
         test_project_module_import_contract_is_explicit,
+        test_nested_dependency_imports_do_not_force_reload_global_modules,
         test_add_photos_direct_calls_are_exported,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,

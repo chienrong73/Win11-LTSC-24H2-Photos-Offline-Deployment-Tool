@@ -3,8 +3,14 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Import-Module (Join-Path $PSScriptRoot 'Logger.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+$script:LoggerModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Logger.psm1'
+$script:CommonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Common.psm1'
+if (-not (Get-Command -Name 'Initialize-Logger' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:LoggerModulePath -ErrorAction Stop
+}
+if (-not (Get-Command -Name 'Test-PathExists' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:CommonModulePath -ErrorAction Stop
+}
 
 function Get-PackageConfig {
     $variable = Get-Variable PhotosDeploymentConfig -Scope Global -ErrorAction SilentlyContinue
