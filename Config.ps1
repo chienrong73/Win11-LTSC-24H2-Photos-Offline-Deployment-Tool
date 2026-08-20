@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 $Global:PhotosDeploymentConfig = [ordered]@{
     Project     = [ordered]@{
         Name    = 'Win11-LTSC-24H2-Photos-Offline-Deployment-Tool'
-        Version = '1.0.0'
+        Version = '2.0.0'
         Author  = 'Enterprise Endpoint Engineering'
         Company = 'Enterprise'
     }
@@ -40,8 +40,7 @@ $Global:PhotosDeploymentConfig = [ordered]@{
     }
     Package     = [ordered]@{
         RootPath         = Join-Path -Path $PSScriptRoot -ChildPath 'Packages'
-        PhotosFilters     = @('*Microsoft.Windows.Photos*.appxbundle', '*Microsoft.Windows.Photos*.msixbundle')
-        DependencyFilters = @('*.appx', '*.msix')
+        SupportedExtensions = @('.appx', '.appxbundle', '.msix', '.msixbundle')
     }
     Logging     = [ordered]@{
         EnableConsole = $true
