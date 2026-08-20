@@ -1,658 +1,190 @@
-﻿<#
-.SYNOPSIS
-    Provides package preparation services for Microsoft Photos offline deployment.
-
-.DESCRIPTION
-    Implements Microsoft Photos package discovery, dependency discovery, package integrity
-    validation, package copying, manifest parsing, version extraction, version comparison,
-    and package preparation orchestration for the Windows 11 LTSC 24H2 Microsoft Photos
-    offline deployment tool.
-
-.NOTES
-    Project: Win11-LTSC-24H2-Photos-Offline-Deployment-Tool
-    Module: Package
-    File: Modules/Package.psm1
-    Encoding: UTF-8 with BOM
-    Author: Enterprise Endpoint Engineering
-    Copyright: (c) 2026. All rights reserved.
-#>
-
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:ModuleMetadata = [ordered]@{
-    Name        = 'Package'
-    Version     = '1.0.0'
-    Description = 'Package preparation services for Microsoft Photos offline deployment.'
-    Project     = 'Win11-LTSC-24H2-Photos-Offline-Deployment-Tool'
-    Encoding    = 'UTF-8 with BOM'
-}
-
 $script:LoggerModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Logger.psm1'
 $script:CommonModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Common.psm1'
-$script:ValidationModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Validation.psm1'
-Import-Module -Name $script:LoggerModulePath -Force
-Import-Module -Name $script:CommonModulePath -Force
-Import-Module -Name $script:ValidationModulePath -Force
-
-function Get-PackageConfig {
-    <#
-    .SYNOPSIS
-        Returns the deployment configuration for package operations.
-
-    .DESCRIPTION
-        Loads Config.ps1 when needed and returns the global deployment configuration used by
-        package discovery and preparation functions.
-
-    .OUTPUTS
-        System.Collections.Specialized.OrderedDictionary
-    #>
-    [CmdletBinding()]
-    param()
-
-    $configurationVariable = Get-Variable -Name 'PhotosDeploymentConfig' -Scope Global -ErrorAction SilentlyContinue
-
-    if (-not $configurationVariable) {
-        $configPath = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'Config.ps1'
-
-        if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-            . $configPath
-        }
-    }
-
-    return (Get-Variable -Name 'PhotosDeploymentConfig' -Scope Global -ErrorAction Stop).Value
+if (-not (Get-Command -Name 'Initialize-Logger' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:LoggerModulePath -ErrorAction Stop
+}
+if (-not (Get-Command -Name 'Test-PathExists' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:CommonModulePath -ErrorAction Stop
 }
 
-function Invoke-PackageError {
-    <#
-    .SYNOPSIS
-        Logs and throws a package module error.
-
-    .DESCRIPTION
-        Writes the supplied error message through the Logger module and throws a terminating
-        exception for package operations that cannot safely continue.
-
-    .PARAMETER Message
-        Error message to log and throw.
-
-    .PARAMETER Exception
-        Optional source exception to include in the thrown error.
-
-    .OUTPUTS
-        None.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $Message,
-
-        [Parameter()]
-        [System.Exception]
-        $Exception
-    )
-
-    if ($Exception) {
-        Write-Error -Message ('{0} Details: {1}' -f $Message, $Exception.Message) -Component 'Package'
-        throw (New-Object -TypeName System.InvalidOperationException -ArgumentList $Message, $Exception)
-    }
-
-    Write-Error -Message $Message -Component 'Package'
-    throw $Message
+function Get-PackageConfig {
+    $variable = Get-Variable PhotosDeploymentConfig -Scope Global -ErrorAction SilentlyContinue
+    if (-not $variable) { . (Join-Path (Split-Path $PSScriptRoot -Parent) 'Config.ps1') }
+    (Get-Variable PhotosDeploymentConfig -Scope Global -ErrorAction Stop).Value
 }
 
 function Test-SupportedPackageExtension {
-    <#
-    .SYNOPSIS
-        Determines whether a package extension is supported.
-
-    .DESCRIPTION
-        Validates a package path extension against the supported AppX/MSIX package types.
-
-    .PARAMETER Path
-        Package path to validate.
-
-    .OUTPUTS
-        System.Boolean
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $Path
-    )
-
-    $extension = [System.IO.Path]::GetExtension($Path)
-    return (@('.appx', '.appxbundle', '.msix', '.msixbundle') -contains $extension.ToLowerInvariant())
+    param([Parameter(Mandatory)][string]$Path)
+    @('.appx', '.appxbundle', '.msix', '.msixbundle') -contains [IO.Path]::GetExtension($Path).ToLowerInvariant()
 }
 
-function Get-PackageFilesByFilter {
-    <#
-    .SYNOPSIS
-        Gets package files matching a configured filter.
-
-    .DESCRIPTION
-        Returns supported AppX/MSIX package files from the supplied root path and filter.
-
-    .PARAMETER RootPath
-        Package root path to search.
-
-    .PARAMETER Filter
-        One or more file filters to apply.
-
-    .OUTPUTS
-        System.IO.FileInfo[]
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $RootPath,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string[]]
-        $Filter
-    )
-
-    if (-not (Test-PathExists -Path $RootPath -PathType Container)) {
-        Invoke-PackageError -Message ('Package root path does not exist: {0}' -f $RootPath)
-    }
-
-    $filesByPath = @{}
-
-    foreach ($currentFilter in $Filter) {
-        foreach ($file in (Get-ChildItem -LiteralPath $RootPath -Filter $currentFilter -File -ErrorAction Stop)) {
-            if (Test-SupportedPackageExtension -Path $file.FullName) {
-                $filesByPath[$file.FullName] = $file
-            }
-        }
-    }
-
-    return @($filesByPath.Values | Sort-Object -Property FullName)
+function Get-PackageFiles {
+    [CmdletBinding()] param([string]$RootPath = [string](Get-PackageConfig).Package.RootPath)
+    if (-not (Test-Path -LiteralPath $RootPath -PathType Container)) { return @() }
+    $extensions = [string[]](Get-PackageConfig).Package.SupportedExtensions
+    @(Get-ChildItem -LiteralPath $RootPath -Recurse -File -ErrorAction Stop |
+        Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } | Sort-Object FullName)
 }
 
-function Get-ZipEntries {
-    <#
-    .SYNOPSIS
-        Returns ZIP archive entries for a package file.
-
-    .DESCRIPTION
-        Opens an AppX/MSIX package as a ZIP archive and returns entries for manifest and
-        integrity checks.
-
-    .PARAMETER PackagePath
-        Package file path.
-
-    .OUTPUTS
-        System.IO.Compression.ZipArchiveEntry[]
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $PackagePath
-    )
-
-    Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($PackagePath)
-
+function Read-ZipXml {
+    param([Parameter(Mandatory)][string]$PackagePath, [Parameter(Mandatory)][string[]]$EntryName)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($PackagePath)
     try {
-        return @($archive.Entries)
-    }
-    finally {
-        $archive.Dispose()
-    }
-}
-
-function Get-PhotosPackage {
-    <#
-    .SYNOPSIS
-        Gets Microsoft Photos package files.
-
-    .DESCRIPTION
-        Discovers supported Microsoft Photos bundle files, validates their package identities
-        and versions, and returns only the newest valid package.
-
-    .OUTPUTS
-        System.IO.FileInfo
-    #>
-    [CmdletBinding()]
-    param()
-
-    $config = Get-PackageConfig
-    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.PhotosFilters))
-    $validPackages = @()
-
-    foreach ($package in $packages) {
-        try {
-            $manifest = Get-PackageManifest -PackagePath $package.FullName
-            $identity = $manifest.Package.Identity
-
-            if (-not $identity) {
-                $identity = $manifest.Bundle.Identity
-            }
-
-            if (-not $identity -or [string]$identity.Name -ine 'Microsoft.Windows.Photos') {
-                Write-Warning -Message ('Ignoring package whose identity is not Microsoft.Windows.Photos: {0}' -f $package.FullName) -Component 'Package'
-                continue
-            }
-
-            $validPackages += [pscustomobject]@{
-                File    = $package
-                Version = Get-PackageVersion -Manifest $manifest
-            }
-        }
-        catch {
-            Write-Warning -Message ('Ignoring invalid Microsoft Photos package {0}: {1}' -f $package.FullName, $_.Exception.Message) -Component 'Package'
-        }
-    }
-
-    if ($validPackages.Count -eq 0) {
-        Write-Warning -Message 'No valid Microsoft Photos package files were found.' -Component 'Package'
-        return @()
-    }
-
-    $selected = $validPackages | Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }, @{ Expression = { $_.File.FullName }; Descending = $false } | Select-Object -First 1
-    Write-Info -Message ('Selected Microsoft Photos package {0} (version {1}) from {2} valid candidate(s).' -f $selected.File.FullName, $selected.Version, $validPackages.Count) -Component 'Package'
-
-    return $selected.File
-}
-
-function Get-DependencyPackages {
-    <#
-    .SYNOPSIS
-        Gets dependency package files.
-
-    .DESCRIPTION
-        Discovers supported dependency AppX/MSIX package files using the configured package
-        root path and DependencyFilters values. Microsoft Photos itself is excluded.
-
-    .OUTPUTS
-        System.IO.FileInfo[]
-    #>
-    [CmdletBinding()]
-    param()
-
-    $config = Get-PackageConfig
-    $packages = @(Get-PackageFilesByFilter -RootPath ([string]$config.Package.RootPath) -Filter ([string[]]$config.Package.DependencyFilters) |
-        Where-Object { $_.BaseName -notlike 'Microsoft.Windows.Photos*' })
-
-    if ($packages.Count -eq 0) {
-        Write-Warning -Message 'No dependency package files were found.' -Component 'Package'
-    }
-    else {
-        Write-Info -Message ('Found {0} dependency package file(s).' -f $packages.Count) -Component 'Package'
-    }
-
-    return $packages
-}
-
-function Test-PackageIntegrity {
-    <#
-    .SYNOPSIS
-        Validates package file integrity.
-
-    .DESCRIPTION
-        Validates that a package file exists, has a supported extension, can be opened as a
-        ZIP archive, and contains a recognizable package manifest.
-
-    .PARAMETER PackagePath
-        Package file path to validate.
-
-    .OUTPUTS
-        System.Collections.Specialized.OrderedDictionary
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $PackagePath
-    )
-
-    $exists = Test-PathExists -Path $PackagePath -PathType Leaf
-    $supportedExtension = Test-SupportedPackageExtension -Path $PackagePath
-    $manifestLoaded = $false
-    $message = 'Package integrity validation completed.'
-
-    if ($exists -and $supportedExtension) {
-        try {
-            [void](Get-PackageManifest -PackagePath $PackagePath)
-            $manifestLoaded = $true
-        }
-        catch {
-            $message = 'Package manifest could not be loaded: {0}' -f $_.Exception.Message
-        }
-    }
-    elseif (-not $exists) {
-        $message = 'Package file does not exist.'
-    }
-    else {
-        $message = 'Package file extension is not supported.'
-    }
-
-    $passed = ($exists -and $supportedExtension -and $manifestLoaded)
-    $result = [ordered]@{
-        PackagePath        = $PackagePath
-        Passed             = $passed
-        Exists             = $exists
-        SupportedExtension = $supportedExtension
-        ManifestLoaded     = $manifestLoaded
-        Message            = $message
-        Timestamp          = Get-Timestamp -Format 'yyyy-MM-dd HH:mm:ss K'
-    }
-
-    if ($passed) {
-        Write-Info -Message ('Package integrity passed: {0}' -f $PackagePath) -Component 'Package'
-    }
-    else {
-        Write-Error -Message ('Package integrity failed: {0}. {1}' -f $PackagePath, $message) -Component 'Package'
-    }
-
-    return $result
-}
-
-function Copy-PackageFiles {
-    <#
-    .SYNOPSIS
-        Copies package files to a destination directory.
-
-    .DESCRIPTION
-        Copies supplied package files to a destination directory using Common.psm1 safe copy
-        helpers. The destination directory is created when required.
-
-    .PARAMETER PackagePath
-        One or more package file paths to copy.
-
-    .PARAMETER DestinationPath
-        Destination directory path for copied package files.
-
-    .OUTPUTS
-        System.IO.FileInfo[]
-    #>
-    [CmdletBinding(SupportsShouldProcess = $true)]
-    param(
-        [Parameter(Mandatory = $true, ValueFromPipeline = $true, Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [string[]]
-        $PackagePath,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $DestinationPath
-    )
-
-    begin {
-        New-Directory -Path $DestinationPath | Out-Null
-        $copiedItems = @()
-    }
-
-    process {
-        foreach ($path in $PackagePath) {
-            if (-not (Test-PathExists -Path $path -PathType Leaf)) {
-                Invoke-PackageError -Message ('Package file does not exist and cannot be copied: {0}' -f $path)
-            }
-
-            $destinationFile = Join-Path -Path $DestinationPath -ChildPath (Split-Path -Path $path -Leaf)
-
-            if ($PSCmdlet.ShouldProcess($destinationFile, ('Copy package file from {0}' -f $path))) {
-                Copy-ItemSafe -SourcePath $path -DestinationPath $destinationFile -Force
-                $copiedItems += (Get-Item -LiteralPath $destinationFile)
-            }
-        }
-    }
-
-    end {
-        Write-Info -Message ('Copied {0} package file(s) to {1}.' -f $copiedItems.Count, $DestinationPath) -Component 'Package'
-        return $copiedItems
-    }
+        $entry = $archive.Entries | Where-Object { $EntryName -contains $_.FullName } | Select-Object -First 1
+        if (-not $entry) { throw "Package has no recognized manifest: $PackagePath" }
+        $stream = $entry.Open(); $reader = New-Object -TypeName IO.StreamReader -ArgumentList $stream
+        try { [xml]$reader.ReadToEnd() } finally { $reader.Dispose(); $stream.Dispose() }
+    } finally { $archive.Dispose() }
 }
 
 function Get-PackageManifest {
-    <#
-    .SYNOPSIS
-        Extracts the package manifest XML.
-
-    .DESCRIPTION
-        Opens a supported AppX/MSIX package and parses AppxManifest.xml. For bundle packages,
-        the function also supports AppxMetadata/AppxBundleManifest.xml when a package manifest
-        is not present.
-
-    .PARAMETER PackagePath
-        Package file path to inspect.
-
-    .OUTPUTS
-        System.Xml.XmlDocument
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $PackagePath
-    )
-
-    if (-not (Test-PathExists -Path $PackagePath -PathType Leaf)) {
-        Invoke-PackageError -Message ('Package file does not exist: {0}' -f $PackagePath)
-    }
-
-    if (-not (Test-SupportedPackageExtension -Path $PackagePath)) {
-        Invoke-PackageError -Message ('Unsupported package extension: {0}' -f $PackagePath)
-    }
-
-    Add-Type -AssemblyName 'System.IO.Compression.FileSystem'
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($PackagePath)
-
-    try {
-        $manifestEntry = $archive.Entries | Where-Object { $_.FullName -ieq 'AppxManifest.xml' } | Select-Object -First 1
-
-        if (-not $manifestEntry) {
-            $manifestEntry = $archive.Entries | Where-Object { $_.FullName -ieq 'AppxMetadata/AppxBundleManifest.xml' } | Select-Object -First 1
-        }
-
-        if (-not $manifestEntry) {
-            Invoke-PackageError -Message ('No AppxManifest.xml or AppxBundleManifest.xml was found in package: {0}' -f $PackagePath)
-        }
-
-        $stream = $manifestEntry.Open()
-        $reader = New-Object -TypeName System.IO.StreamReader -ArgumentList $stream
-
-        try {
-            [xml]$manifest = $reader.ReadToEnd()
-            Write-Info -Message ('Parsed package manifest from {0}.' -f $PackagePath) -Component 'Package'
-            return $manifest
-        }
-        finally {
-            $reader.Dispose()
-            $stream.Dispose()
-        }
-    }
-    catch {
-        Invoke-PackageError -Message ('Unable to parse package manifest: {0}' -f $PackagePath) -Exception $_.Exception
-    }
-    finally {
-        $archive.Dispose()
-    }
+    [CmdletBinding()] param([Parameter(Mandatory,Position=0)][string]$PackagePath)
+    Read-ZipXml $PackagePath @('AppxManifest.xml', 'AppxMetadata/AppxBundleManifest.xml')
 }
 
 function Get-PackageVersion {
-    <#
-    .SYNOPSIS
-        Returns a package version as a Version object.
-
-    .DESCRIPTION
-        Parses the package manifest and returns the Identity Version value as a standard
-        System.Version object.
-
-    .PARAMETER PackagePath
-        Package file path to inspect.
-
-    .PARAMETER Manifest
-        Already parsed package manifest XML.
-
-    .OUTPUTS
-        System.Version
-    #>
-    [CmdletBinding(DefaultParameterSetName = 'Path')]
-    param(
-        [Parameter(Mandatory = $true, ParameterSetName = 'Path', Position = 0)]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $PackagePath,
-
-        [Parameter(Mandatory = $true, ParameterSetName = 'Manifest')]
-        [ValidateNotNull()]
-        [xml]
-        $Manifest
-    )
-
-    if ($PSCmdlet.ParameterSetName -eq 'Path') {
-        $Manifest = Get-PackageManifest -PackagePath $PackagePath
-    }
-
-    $identity = $Manifest.Package.Identity
-
-    if (-not $identity) {
-        $identity = $Manifest.Bundle.Identity
-    }
-
-    if (-not $identity -or -not $identity.Version) {
-        Invoke-PackageError -Message 'Package manifest does not contain an Identity Version value.'
-    }
-
-    $version = [version]$identity.Version
-    Write-Info -Message ('Detected package version: {0}' -f $version) -Component 'Package'
-
-    return $version
+    [CmdletBinding(DefaultParameterSetName='Path')] param(
+        [Parameter(Mandatory,ParameterSetName='Path',Position=0)][string]$PackagePath,
+        [Parameter(Mandatory,ParameterSetName='Manifest')][xml]$Manifest)
+    if ($PSCmdlet.ParameterSetName -eq 'Path') { $Manifest = Get-PackageManifest $PackagePath }
+    $identity = if ($Manifest.Package.Identity) { $Manifest.Package.Identity } else { $Manifest.Bundle.Identity }
+    [version]$identity.Version
 }
 
 function Compare-PackageVersion {
-    <#
-    .SYNOPSIS
-        Compares two package versions.
+    param([Parameter(Mandatory)][version]$Version,[Parameter(Mandatory)][version]$ReferenceVersion)
+    if ($Version -gt $ReferenceVersion) { 'Newer' } elseif ($Version -lt $ReferenceVersion) { 'Older' } else { 'Equal' }
+}
 
-    .DESCRIPTION
-        Compares a candidate package version to a reference package version and returns
-        Newer, Older, or Equal.
+function Get-ManifestDependencies {
+    param([Parameter(Mandatory)][xml]$Manifest)
+    @($Manifest.SelectNodes("//*[local-name()='Dependencies']/*[local-name()='PackageDependency']") | ForEach-Object {
+        [pscustomobject]@{
+            Name = [string]$_.Name
+            MinimumVersion = if ($_.MinVersion) { [version]$_.MinVersion } else { [version]'0.0.0.0' }
+            Publisher = [string]$_.Publisher
+        }
+    })
+}
 
-    .PARAMETER Version
-        Candidate package version to compare.
-
-    .PARAMETER ReferenceVersion
-        Reference package version used as the comparison baseline.
-
-    .OUTPUTS
-        System.String
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [version]
-        $Version,
-
-        [Parameter(Mandatory = $true)]
-        [version]
-        $ReferenceVersion
-    )
-
-    if ($Version -gt $ReferenceVersion) {
-        Write-Info -Message ('Package version {0} is newer than {1}.' -f $Version, $ReferenceVersion) -Component 'Package'
-        return 'Newer'
+function New-PackageRecord {
+    param([string]$Path,[xml]$Manifest,[string]$DeployPath = $Path,[switch]$FromBundle,[string]$BundleIdentity)
+    $identity = $Manifest.Package.Identity
+    if (-not $identity) { throw "Inner package has no Identity: $Path" }
+    $properties = $Manifest.Package.Properties
+    $applications = @($Manifest.SelectNodes("/*[local-name()='Package']/*[local-name()='Applications']/*[local-name()='Application']"))
+    $isFramework = ([string]$properties.Framework -ieq 'true')
+    $isResource = ([string]$properties.ResourcePackage -ieq 'true') -or (-not [string]::IsNullOrWhiteSpace([string]$identity.ResourceId))
+    $isOptional = @($Manifest.SelectNodes("//*[local-name()='Dependencies']/*[local-name()='MainPackageDependency']")).Count -gt 0
+    $classification = if ($isFramework) { 'Framework' } elseif ($isResource) { 'Resource' } elseif ($isOptional) { 'Optional' } elseif ($applications.Count -gt 0) { 'MainApplication' } else { 'Dependency' }
+    $displayName = [string]$properties.DisplayName
+    if ([string]::IsNullOrWhiteSpace($displayName) -or $displayName.StartsWith('ms-resource:')) { $displayName = [string]$identity.Name }
+    [pscustomobject]@{
+        Path=$DeployPath; ManifestPath=$Path; Identity=[string]$identity.Name; Publisher=[string]$identity.Publisher
+        Version=[version]$identity.Version; Architecture=if ($identity.ProcessorArchitecture) {[string]$identity.ProcessorArchitecture} else {'neutral'}
+        DisplayName=$displayName; Classification=$classification; IsBundle=[bool]$FromBundle; BundleIdentity=$BundleIdentity
+        Dependencies=@(Get-ManifestDependencies $Manifest)
     }
+}
 
-    if ($Version -lt $ReferenceVersion) {
-        Write-Info -Message ('Package version {0} is older than {1}.' -f $Version, $ReferenceVersion) -Component 'Package'
-        return 'Older'
+function Get-BundleRecords {
+    param([Parameter(Mandatory)][IO.FileInfo]$File,[Parameter(Mandatory)][xml]$BundleManifest)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($File.FullName); $records=@()
+    try {
+        $bundleIdentity = [string]$BundleManifest.Bundle.Identity.Name
+        foreach ($node in @($BundleManifest.SelectNodes("//*[local-name()='Packages']/*[local-name()='Package']"))) {
+            $entry = $archive.GetEntry([string]$node.FileName); if (-not $entry) { continue }
+            $memory = New-Object -TypeName IO.MemoryStream; $source=$entry.Open()
+            try { $source.CopyTo($memory); $memory.Position=0; $inner=New-Object -TypeName IO.Compression.ZipArchive -ArgumentList @($memory,[IO.Compression.ZipArchiveMode]::Read,$true)
+                try { $manifestEntry=$inner.GetEntry('AppxManifest.xml'); if (-not $manifestEntry) { continue }; $s=$manifestEntry.Open(); $r=New-Object -TypeName IO.StreamReader -ArgumentList $s
+                    try { [xml]$xml=$r.ReadToEnd(); $records += New-PackageRecord -Path ($File.FullName+'!'+$node.FileName) -Manifest $xml -DeployPath $File.FullName -FromBundle -BundleIdentity $bundleIdentity }
+                    finally { $r.Dispose(); $s.Dispose() }
+                } finally { $inner.Dispose() }
+            } finally { $source.Dispose(); $memory.Dispose() }
+        }
+    } finally { $archive.Dispose() }
+    $records
+}
+
+function Get-PackageCatalog {
+    [CmdletBinding()] param([string]$RootPath = [string](Get-PackageConfig).Package.RootPath)
+    $catalog=@()
+    foreach ($file in @(Get-PackageFiles $RootPath)) {
+        try {
+            $manifest=Get-PackageManifest $file.FullName
+            if ($manifest.Bundle) { $catalog += Get-BundleRecords $file $manifest }
+            else { $catalog += New-PackageRecord $file.FullName $manifest }
+        } catch { Write-Warning -Message ("Ignoring invalid package {0}: {1}" -f $file.FullName,$_.Exception.Message) -Component Package }
     }
+    Write-Info -Message ('Discovered {0} valid package payload record(s) beneath {1}.' -f $catalog.Count,$RootPath) -Component Package
+    @($catalog)
+}
 
-    Write-Info -Message ('Package version {0} is equal to {1}.' -f $Version, $ReferenceVersion) -Component 'Package'
-    return 'Equal'
+function Test-ArchitectureMatch {
+    param([string]$Required,[string]$Candidate)
+    ($Candidate -ieq 'neutral' -or $Candidate -ieq $Required)
+}
+
+function Get-PreferredArchitecture {
+    $architecture = [string]$env:PROCESSOR_ARCHITECTURE
+    if ($architecture -ieq 'AMD64') { return 'x64' }
+    if ($architecture -ieq 'ARM64') { return 'arm64' }
+    if ($architecture -ieq 'x86') { return 'x86' }
+    return 'neutral'
+}
+
+function Resolve-AppDependencies {
+    [CmdletBinding()] param([Parameter(Mandatory)]$Application,[Parameter(Mandatory)][object[]]$Catalog,[string]$TargetArchitecture = (Get-PreferredArchitecture))
+    $resolved=@{}; $missing=@(); $queue=New-Object Collections.Queue
+    $applicationArchitecture = if ($Application.Architecture -ieq 'neutral') { $TargetArchitecture } else { $Application.Architecture }
+    foreach ($requirement in @($Application.Dependencies)) { $queue.Enqueue([pscustomobject]@{ Requirement=$requirement; Architecture=$applicationArchitecture }) }
+    while ($queue.Count -gt 0) {
+        $item=$queue.Dequeue(); $requirement=$item.Requirement
+        $candidate=@($Catalog | Where-Object {
+            $_.Classification -in @('Framework','Dependency') -and $_.Identity -ieq $requirement.Name -and
+            $_.Version -ge $requirement.MinimumVersion -and (Test-ArchitectureMatch $item.Architecture $_.Architecture) -and
+            ([string]::IsNullOrWhiteSpace($requirement.Publisher) -or $_.Publisher -ieq $requirement.Publisher)
+        } | Sort-Object Version -Descending | Select-Object -First 1)
+        if ($candidate.Count -eq 0) { $missing += ('{0} (>= {1}, {2})' -f $requirement.Name,$requirement.MinimumVersion,$item.Architecture); continue }
+        $selected=$candidate[0]; $key='{0}|{1}|{2}' -f $selected.Identity,$selected.Version,$selected.Architecture
+        if (-not $resolved.ContainsKey($key)) {
+            $resolved[$key]=$selected
+            $childArchitecture = if ($selected.Architecture -ieq 'neutral') { $item.Architecture } else { $selected.Architecture }
+            foreach ($child in @($selected.Dependencies)) { $queue.Enqueue([pscustomobject]@{Requirement=$child;Architecture=$childArchitecture}) }
+        }
+    }
+    [pscustomobject]@{ Passed=($missing.Count -eq 0); Dependencies=@($resolved.Values); Missing=@($missing | Select-Object -Unique) }
 }
 
 function Invoke-PackagePreparation {
-    <#
-    .SYNOPSIS
-        Runs package preparation operations.
-
-    .DESCRIPTION
-        Validates required package availability, discovers Photos and dependency packages,
-        validates package integrity, copies packages to a temporary preparation directory,
-        and returns a complete package preparation summary.
-
-    .PARAMETER DestinationPath
-        Optional destination directory for prepared package files. When omitted, a temporary
-        directory is created using Common.psm1.
-
-    .OUTPUTS
-        System.Collections.Specialized.OrderedDictionary
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter()]
-        [ValidateNotNullOrEmpty()]
-        [string]
-        $DestinationPath
-    )
-
-    Write-Info -Message 'Starting package preparation.' -Component 'Package'
-
-    $requiredPackageValidation = Test-RequiredPackages
-    $photosPackages = @(Get-PhotosPackage)
-    $dependencyPackages = @(Get-DependencyPackages)
-    $allPackages = @($photosPackages + $dependencyPackages)
-    $integrityResults = @()
-
-    foreach ($package in $allPackages) {
-        $integrityResults += (Test-PackageIntegrity -PackagePath $package.FullName)
+    [CmdletBinding()] param()
+    $root=[string](Get-PackageConfig).Package.RootPath
+    foreach ($folder in @('Common','Photos','StickyNotes')) { New-Item -ItemType Directory -Path (Join-Path $root $folder) -Force | Out-Null }
+    $catalog=@(Get-PackageCatalog $root)
+    $preferredArchitecture=Get-PreferredArchitecture
+    $apps=@($catalog | Where-Object Classification -eq 'MainApplication' | Group-Object Identity | ForEach-Object {
+        $_.Group | Sort-Object @{Expression='Version';Descending=$true},@{Expression={ if ($_.Architecture -ieq $preferredArchitecture) { 0 } elseif ($_.Architecture -ieq 'neutral') { 1 } else { 2 } }} | Select-Object -First 1
+    } | Sort-Object DisplayName)
+    foreach ($app in $apps) {
+        $resolution=Resolve-AppDependencies $app $catalog
+        Add-Member -InputObject $app -NotePropertyName Resolution -NotePropertyValue $resolution
+        if ($resolution.Passed) {
+            Write-Info -Message ('Application {0} is ready with {1} resolved dependency package(s).' -f $app.Identity,$resolution.Dependencies.Count) -Component Package
+        }
+        else {
+            Write-Warning -Message ('Application {0} is missing dependencies: {1}' -f $app.Identity,($resolution.Missing -join ', ')) -Component Package
+        }
     }
-
-    if (-not $PSBoundParameters.ContainsKey('DestinationPath')) {
-        $DestinationPath = Get-TempDirectory -Prefix 'PhotosPackages'
-    }
-    else {
-        New-Directory -Path $DestinationPath | Out-Null
-    }
-
-    $passedIntegrity = @($integrityResults | Where-Object { $_['Passed'] })
-    $copiedPackages = @()
-
-    if ($passedIntegrity.Count -gt 0) {
-        $packagePathsToCopy = @($passedIntegrity | ForEach-Object { $_['PackagePath'] })
-        $copiedPackages = @(Copy-PackageFiles -PackagePath $packagePathsToCopy -DestinationPath $DestinationPath)
-    }
-    else {
-        Write-Fatal -Message 'No packages passed integrity validation; package preparation cannot copy files.' -Component 'Package'
-    }
-
-    $failedIntegrity = @($integrityResults | Where-Object { -not $_['Passed'] })
-    $passed = ([bool]$requiredPackageValidation['Passed'] -and $failedIntegrity.Count -eq 0 -and $copiedPackages.Count -eq $allPackages.Count)
-    $summary = [ordered]@{
-        Passed                    = $passed
-        DestinationPath           = $DestinationPath
-        RequiredPackageValidation = $requiredPackageValidation
-        PhotosPackages            = @($photosPackages.FullName)
-        DependencyPackages        = @($dependencyPackages.FullName)
-        IntegrityResults          = $integrityResults
-        CopiedPackages            = @($copiedPackages.FullName)
-        Timestamp                 = Get-Timestamp -Format 'yyyy-MM-dd HH:mm:ss K'
-    }
-
-    if ($passed) {
-        Write-Info -Message 'Package preparation completed successfully.' -Component 'Package'
-    }
-    else {
-        Write-Fatal -Message 'Package preparation completed with failures.' -Component 'Package'
-    }
-
-    return $summary
+    [ordered]@{ Passed=($apps.Count -gt 0); Catalog=$catalog; Applications=$apps; Timestamp=Get-Date }
 }
 
-Export-ModuleMember -Function 'Get-PhotosPackage', 'Get-DependencyPackages', 'Test-PackageIntegrity', 'Copy-PackageFiles', 'Get-PackageManifest', 'Get-PackageVersion', 'Compare-PackageVersion', 'Invoke-PackagePreparation'
+function Test-PackageIntegrity { param([Parameter(Mandatory,Position=0)][string]$PackagePath) try { [void](Get-PackageManifest $PackagePath); [ordered]@{PackagePath=$PackagePath;Passed=$true} } catch { [ordered]@{PackagePath=$PackagePath;Passed=$false;Message=$_.Exception.Message} } }
+
+Export-ModuleMember -Function 'Get-PackageFiles','Get-PackageManifest','Get-PackageVersion','Compare-PackageVersion','Get-PackageCatalog','Resolve-AppDependencies','Test-PackageIntegrity','Invoke-PackagePreparation'

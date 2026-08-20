@@ -31,7 +31,9 @@ $script:ModuleMetadata = [ordered]@{
 }
 
 $script:LoggerModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Logger.psm1'
-Import-Module -Name $script:LoggerModulePath -Force
+if (-not (Get-Command -Name 'Initialize-Logger' -CommandType Function -ErrorAction SilentlyContinue)) {
+    Import-Module -Name $script:LoggerModulePath -ErrorAction Stop
+}
 
 function Invoke-CommonError {
     <#
