@@ -66,10 +66,7 @@ try {
     Initialize-Logger -EnableConsole $config.Logging.EnableConsole -EnableFile $config.Logging.EnableFile -LogFolder $config.Logging.LogFolder -LogFileName $config.Logging.LogFileName -LogLevel $config.Logging.LogLevel | Out-Null
     Write-Header -Message ("{0} v{1}" -f $config.Project.Name, $config.Project.Version)
 
-    # These are convenience folders only. Discovery never assigns meaning to their names.
-    foreach ($packageFolder in @('Common', 'Photos', 'StickyNotes')) {
-        New-Item -ItemType Directory -Path (Join-Path ([string]$config.Package.RootPath) $packageFolder) -Force | Out-Null
-    }
+    New-Item -ItemType Directory -Path ([string]$config.Package.RootPath) -Force | Out-Null
 
     $validation = Invoke-PreDeploymentValidation
     if (-not $validation.Passed) { throw ("Pre-deployment validation failed ({0} check(s) failed)." -f $validation.FailedCount) }

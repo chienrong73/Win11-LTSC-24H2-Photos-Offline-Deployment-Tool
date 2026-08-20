@@ -205,12 +205,47 @@ def test_recursive_manifest_driven_discovery() -> None:
             raise AssertionError(f"package discovery must not use app-specific filter: {forbidden}")
 
 
+def test_package_root_has_no_fixed_layout() -> None:
+    assert_contains(
+        ADD_PHOTOS,
+        "New-Item -ItemType Directory -Path ([string]$config.Package.RootPath) -Force",
+        "Add_Photos must create only the configured package root",
+    )
+    assert_contains(
+        PACKAGE,
+        "New-Item -ItemType Directory -Path $root -Force",
+        "package preparation must create only the configured package root",
+    )
+    for fixed_folder in ("@('Common', 'Photos', 'StickyNotes')", "@('Common','Photos','StickyNotes')"):
+        if fixed_folder in ADD_PHOTOS or fixed_folder in PACKAGE:
+            raise AssertionError("package preparation must not create fixed app-specific folders")
+    assert_contains(PACKAGE, "-LiteralPath $RootPath -Recurse -File", "packages in the root and arbitrary nested folders must be scanned")
+
+
+def test_strict_mode_safe_optional_xml_parsing() -> None:
+    assert_contains(PACKAGE, "SelectSingleNode(\"/*[local-name()='Package' or local-name()='Bundle']\")", "Package and Bundle roots must be selected safely")
+    assert_contains(PACKAGE, ".Attributes.GetNamedItem($Name)", "optional XML attributes must use safe named lookup")
+    assert_contains(PACKAGE, "Get-XmlChildElement $properties 'Framework'", "Framework must be treated as an optional element")
+    assert_contains(PACKAGE, "Get-XmlChildElement $properties 'ResourcePackage'", "ResourcePackage must be treated as an optional element")
+    assert_contains(PACKAGE, "Get-XmlChildElement $properties 'DisplayName'", "DisplayName must be treated as an optional element")
+    assert_contains(PACKAGE, "[version]'0.0.0.0'", "missing MinVersion must default to zero")
+    assert_contains(PACKAGE, "$architecture = 'neutral'", "missing ProcessorArchitecture must default to neutral")
+    for unsafe_access in (
+        "$Manifest.Package", "$Manifest.Bundle", "$properties.Framework", "$properties.ResourcePackage",
+        "$properties.DisplayName", "$identity.ResourceId", "$identity.ProcessorArchitecture",
+        "$identity.Name", "$identity.Version", "$identity.Publisher", "$_.MinVersion",
+        "$node.FileName", "$BundleManifest.Bundle",
+    ):
+        if unsafe_access in PACKAGE:
+            raise AssertionError(f"StrictMode-unsafe optional XML property access remains: {unsafe_access}")
+
+
 def test_manifest_classification() -> None:
     for classification in ("MainApplication", "Framework", "Resource", "Optional", "Dependency"):
         assert classification in PACKAGE
     assert_contains(PACKAGE, "local-name()='Application'", "applications must be identified through the manifest")
     assert_contains(PACKAGE, "AppxBundleManifest.xml", "bundles must be parsed")
-    assert_contains(PACKAGE, "$BundleManifest.Bundle.Identity.Name", "bundle identity must be retained")
+    assert_contains(PACKAGE, "Get-XmlAttributeValue $bundleIdentityNode 'Name'", "bundle identity must be retained")
     if "if ([string]$node.Type -ine 'application')" in PACKAGE:
         raise AssertionError("bundle resource and architecture payloads must be inspected rather than skipped")
 
@@ -325,6 +360,8 @@ def main() -> None:
     # elevation and mount/commit regression inherited from PR #4 and latest main.
     package_discovery_tests = [
         test_recursive_manifest_driven_discovery,
+        test_package_root_has_no_fixed_layout,
+        test_strict_mode_safe_optional_xml_parsing,
         test_manifest_classification,
         test_dependency_resolution_contract,
         test_missing_dependencies_are_rejected_before_mount,
