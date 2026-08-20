@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Provides DISM operations for Microsoft Photos offline deployment.
 .DESCRIPTION
@@ -132,11 +132,13 @@ function Invoke-OfflineDeployment {
     param(
         [Parameter(Mandatory = $true)][string]$ImagePath,
         [Parameter(Mandatory = $true)][string]$MountPath,
-        [Parameter(Mandatory = $true)][string]$PhotosPackagePath,
+        [Parameter(Mandatory = $true)][string[]]$ApplicationPackagePath,
         [Parameter()][string[]]$DependencyPackagePath = @(),
+        [Parameter()][string[]]$ExpectedPackageIdentity = @(),
         [Parameter()][ValidateRange(1, 65535)][int]$Index = 1,
         [Parameter()][bool]$CommitOnSuccess = $true,
-        [Parameter()][bool]$AutoUnmount = $true
+        [Parameter()][bool]$AutoUnmount = $true,
+        [Parameter()][bool]$ContinueOnError = $false
     )
     $mountedHere = $false
     $committed = $false
@@ -146,8 +148,25 @@ function Invoke-OfflineDeployment {
             Mount-WindowsImage -ImagePath $ImagePath -MountPath $MountPath -Index $Index -WhatIf:$WhatIfPreference | Out-Null
             $mountedHere = -not $WhatIfPreference
         }
-        foreach ($dependency in $DependencyPackagePath) { Add-OfflinePackage -MountPath $MountPath -PackagePath $dependency -WhatIf:$WhatIfPreference | Out-Null }
-        Add-OfflinePackage -MountPath $MountPath -PackagePath $PhotosPackagePath -WhatIf:$WhatIfPreference | Out-Null
+        $installationErrors = @()
+        foreach ($dependency in $DependencyPackagePath) {
+            try { Add-OfflinePackage -MountPath $MountPath -PackagePath $dependency -WhatIf:$WhatIfPreference | Out-Null }
+            catch { $installationErrors += $_; if (-not $ContinueOnError) { throw } }
+        }
+        foreach ($application in $ApplicationPackagePath) {
+            try { Add-OfflinePackage -MountPath $MountPath -PackagePath $application -WhatIf:$WhatIfPreference | Out-Null }
+            catch { $installationErrors += $_; if (-not $ContinueOnError) { throw } }
+        }
+        if ($installationErrors.Count -gt 0) {
+            throw ('One or more package installations failed: {0}' -f (($installationErrors | ForEach-Object { $_.Exception.Message }) -join '; '))
+        }
+
+        if (-not $WhatIfPreference) {
+            $provisioned = Get-OfflinePackage -MountPath $MountPath
+            $provisionedText = $provisioned.Output -join "`n"
+            $missingIdentity = @($ExpectedPackageIdentity | Where-Object { $provisionedText -notmatch [regex]::Escape($_) })
+            if ($missingIdentity.Count -gt 0) { throw ('Post-install verification did not find: {0}' -f ($missingIdentity -join ', ')) }
+        }
 
         if ($CommitOnSuccess) {
             if ($AutoUnmount -and $mountedHere) {
@@ -169,8 +188,14 @@ function Invoke-OfflineDeployment {
     }
     catch {
         Write-Fatal -Message ("Offline deployment failed: {0}" -f $_.Exception.Message) -Component 'Dism'
-        if ($mountedHere -and $AutoUnmount) {
-            try { Dismount-WindowsImage -MountPath $MountPath -WhatIf:$WhatIfPreference | Out-Null } catch { Write-Warning -Message ("Cleanup failed: {0}" -f $_.Exception.Message) -Component 'Dism' }
+        if ($mountedHere) {
+            try {
+                # A mount owned by this invocation is always discarded after failure, even
+                # when KeepMounted was requested; preserving a dirty image is never safe.
+                Dismount-WindowsImage -MountPath $MountPath -WhatIf:$WhatIfPreference | Out-Null
+                $mountedHere = $false
+            }
+            catch { Write-Warning -Message ("Cleanup failed: {0}" -f $_.Exception.Message) -Component 'Dism' }
         }
         throw
     }

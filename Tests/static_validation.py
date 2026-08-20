@@ -14,6 +14,16 @@ CONFIG = (ROOT / "Config.ps1").read_text(encoding="utf-8")
 PACKAGE = (ROOT / "Modules" / "Package.psm1").read_text(encoding="utf-8-sig")
 VALIDATION = (ROOT / "Modules" / "Validation.psm1").read_text(encoding="utf-8-sig")
 LOGGER = (ROOT / "Modules" / "Logger.psm1").read_text(encoding="utf-8")
+COMMON = (ROOT / "Modules" / "Common.psm1").read_text(encoding="utf-8-sig")
+POWERSHELL_SOURCES = {
+    "Add_Photos.ps1": ADD_PHOTOS,
+    "Config.ps1": CONFIG,
+    "Modules/Common.psm1": COMMON,
+    "Modules/Validation.psm1": VALIDATION,
+    "Modules/Package.psm1": PACKAGE,
+    "Modules/Dism.psm1": DISM,
+    "Modules/Logger.psm1": LOGGER,
+}
 
 
 def assert_contains(text: str, needle: str, message: str) -> None:
@@ -170,59 +180,77 @@ def test_add_photos_direct_calls_are_exported() -> None:
             assert f"'{function}'" in export_line, f"{module}.psm1 must export {function}"
 
 
-def select_newest_photos(filenames: list[str]) -> str | None:
-    """Model the configured extension/name/version rules for static test fixtures."""
-    candidates = []
-    pattern = re.compile(
-        r"^Microsoft\.Windows\.Photos_(\d+\.\d+\.\d+\.\d+)_.*\.(appxbundle|msixbundle)$",
-        re.IGNORECASE,
-    )
-    for filename in filenames:
-        match = pattern.match(filename)
-        if match:
-            candidates.append((tuple(int(part) for part in match.group(1).split(".")), filename))
-    return max(candidates, default=(None, None))[1]
+def test_recursive_manifest_driven_discovery() -> None:
+    assert_contains(PACKAGE, "Get-ChildItem -LiteralPath $RootPath -Recurse -File", "discovery must be recursive")
+    for extension in (".appx", ".appxbundle", ".msix", ".msixbundle"):
+        assert extension in CONFIG
+    for forbidden in ("PhotosFilters", "DependencyFilters", "Microsoft.Windows.Photos", "Microsoft.MicrosoftStickyNotes", "Microsoft.Paint", "Microsoft.WindowsCalculator"):
+        if forbidden in PACKAGE or forbidden in CONFIG:
+            raise AssertionError(f"package discovery must not use app-specific filter: {forbidden}")
 
 
-def test_only_appxbundle_photos() -> None:
-    assert "'*Microsoft.Windows.Photos*.appxbundle'" in CONFIG
-    package = "Microsoft.Windows.Photos_2024.1.2.3_x64.appxbundle"
-    assert select_newest_photos([package]) == package
+def test_manifest_classification() -> None:
+    for classification in ("MainApplication", "Framework", "Resource", "Optional", "Dependency"):
+        assert classification in PACKAGE
+    assert_contains(PACKAGE, "local-name()='Application'", "applications must be identified through the manifest")
+    assert_contains(PACKAGE, "AppxBundleManifest.xml", "bundles must be parsed")
+    assert_contains(PACKAGE, "$BundleManifest.Bundle.Identity.Name", "bundle identity must be retained")
+    if "if ([string]$node.Type -ine 'application')" in PACKAGE:
+        raise AssertionError("bundle resource and architecture payloads must be inspected rather than skipped")
 
 
-def test_only_msixbundle_photos() -> None:
-    assert "'*Microsoft.Windows.Photos*.msixbundle'" in CONFIG
-    package = "Microsoft.Windows.Photos_2026.11060.2004.0_x64.msixbundle"
-    assert select_newest_photos([package]) == package
+def test_dependency_resolution_contract() -> None:
+    for field in ("requirement.Name", "requirement.MinimumVersion", "requirement.Publisher", "Architecture"):
+        assert field in PACKAGE
+    assert_contains(PACKAGE, "$resolved.ContainsKey($key)", "resolved dependencies must be unique")
+    assert_contains(PACKAGE, "Sort-Object Version -Descending", "the highest compatible dependency must win")
+    assert_contains(PACKAGE, "$Candidate -ieq 'neutral' -or $Candidate -ieq $Required", "architecture must be exact or neutral")
+    assert_contains(ADD_PHOTOS, "Missing Dependencies", "menu must report missing dependencies before mounting")
 
 
-def test_mixed_photos_versions_are_accepted() -> None:
-    packages = [
-        "Microsoft.Windows.Photos_2024.1.2.3_x64.appxbundle",
-        "Microsoft.Windows.Photos_2026.11060.2004.0_x64.msixbundle",
-    ]
-    assert select_newest_photos(packages) is not None
-    assert_contains(PACKAGE, "$validPackages.Count -eq 0", "multiple valid Photos packages must not cause failure")
+def test_missing_dependencies_are_rejected_before_mount() -> None:
+    ready_check = ADD_PHOTOS.index("$notReady = @(")
+    deployment_call = ADD_PHOTOS.index("Invoke-OfflineDeployment @invokeParameters")
+    assert ready_check < deployment_call
+    assert_contains(ADD_PHOTOS, "throw ('Selected application(s) have missing dependencies:", "not-ready selections must terminate")
 
 
-def test_newest_photos_version_is_selected_once() -> None:
-    old = "Microsoft.Windows.Photos_2024.1.2.3_x64.appxbundle"
-    new = "Microsoft.Windows.Photos_2026.11060.2004.0_x64.msixbundle"
-    assert select_newest_photos([old, new]) == new
-    assert_contains(PACKAGE, "Sort-Object -Property @{ Expression = { $_.Version }; Descending = $true }", "Photos candidates must be sorted newest first")
-    assert_contains(PACKAGE, "return $selected.File", "only the selected Photos package must be returned")
-    assert_contains(ADD_PHOTOS, "PhotosPackagePath    = [string]$preparation.PhotosPackages[0]", "deployment must receive only the selected Photos package")
+def test_shared_dependencies_are_deduplicated() -> None:
+    assert_contains(ADD_PHOTOS, "Group-Object Identity,Version,Architecture", "shared dependencies must be deduplicated across selected apps")
+    assert_contains(PACKAGE, "$key='{0}|{1}|{2}'", "resolver deduplication must include identity, version, and architecture")
 
 
-def test_appx_dependencies_are_discovered() -> None:
-    assert "'*.appx'" in CONFIG
-    assert_contains(VALIDATION, "foreach ($filter in $dependencyFilters)", "required-package validation must use every configured dependency filter")
+def test_generic_application_menu_and_install_order() -> None:
+    assert_contains(ADD_PHOTOS, "Read-Host 'Select applications", "application selection must be interactive")
+    assert_contains(ADD_PHOTOS, "$selection -split ','", "comma-separated selections must be accepted")
+    assert_contains(ADD_PHOTOS, "ApplicationPackagePath", "selected main applications must be passed to deployment")
+    assert_contains(ADD_PHOTOS, "Architecture : {0}", "the menu must show architecture")
+    body = get_invoke_offline_deployment_body()
+    assert body.index("foreach ($dependency") < body.index("foreach ($application"), "dependencies must be installed before applications"
 
 
-def test_msix_dependencies_exclude_photos() -> None:
-    assert "'*.msix'" in CONFIG
-    assert_contains(PACKAGE, "$_.BaseName -notlike 'Microsoft.Windows.Photos*'", "dependency discovery must exclude Microsoft Photos")
-    assert_contains(VALIDATION, "$package.BaseName -notlike 'Microsoft.Windows.Photos*'", "required-package validation must exclude Microsoft Photos dependencies")
+def test_configuration_controls_remain_wired() -> None:
+    for setting in ("ImagePath", "MountPath", "Index", "RootPath", "Mode", "ContinueOnError", "DryRun", "Logging"):
+        assert setting in CONFIG, f"configuration setting was lost: {setting}"
+    assert_contains(ADD_PHOTOS, "$config.Deployment.ContinueOnError", "continue-on-error must reach deployment")
+    assert_contains(ADD_PHOTOS, "$config.Deployment.DryRun", "configured dry-run must activate WhatIf")
+
+
+def test_windows_powershell_51_static_compatibility() -> None:
+    incompatible = {
+        r"\?\?": "null-coalescing operator",
+        r"\?\.": "null-conditional operator",
+        r"\bForEach-Object\s+-Parallel\b": "parallel ForEach-Object",
+        r"\$\w+\s*\?\s*[^\r\n:]+\s*:": "ternary operator",
+        r"\|\|": "pipeline-chain OR",
+        r"&&": "pipeline-chain AND",
+    }
+    for path, source in POWERSHELL_SOURCES.items():
+        code = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
+        for pattern, feature in incompatible.items():
+            if re.search(pattern, code):
+                raise AssertionError(f"{path} uses PowerShell 7-only {feature}")
+        assert "#Requires -Version 5.1" in source, f"{path} must declare Windows PowerShell 5.1"
 
 
 def get_invoke_offline_deployment_body() -> str:
@@ -256,16 +284,38 @@ def test_no_commit_reports_false() -> None:
     assert_contains(body, "Committed = $committed", "result must report the actual commit/save state")
 
 
+def test_one_mount_one_commit_and_post_install_verification() -> None:
+    body = get_invoke_offline_deployment_body()
+    assert body.count("Mount-WindowsImage -ImagePath") == 1, "the orchestration may mount only once"
+    assert_contains(body, "Get-OfflinePackage -MountPath $MountPath", "packages must be verified before commit")
+    assert body.index("Get-OfflinePackage -MountPath $MountPath") < body.index("if ($CommitOnSuccess)")
+    assert_contains(body, "if ($AutoUnmount -and $mountedHere)", "commit branches must be mutually exclusive")
+    assert_contains(body, "else {\n                Save-WindowsImage", "a successful invocation must choose only one commit mechanism")
+
+
+def test_error_path_discards_owned_mount_even_when_keep_mounted() -> None:
+    body = get_invoke_offline_deployment_body()
+    catch_body = body.split("    catch {\n        Write-Fatal -Message (\"Offline deployment failed:", 1)[1]
+    assert_contains(catch_body, "if ($mountedHere)", "owned mounts must always be cleaned after errors")
+    if "if ($mountedHere -and $AutoUnmount)" in catch_body:
+        raise AssertionError("KeepMounted must not preserve a dirty mount after failure")
+    assert_contains(catch_body, "Dismount-WindowsImage -MountPath $MountPath", "failure cleanup must use discard dismount")
+    if "-Save" in next(line for line in catch_body.splitlines() if "Dismount-WindowsImage" in line):
+        raise AssertionError("failure cleanup must never commit")
+
+
 def main() -> None:
     # Conflict-resolution contract: keep PR #5 package coverage alongside every
     # elevation and mount/commit regression inherited from PR #4 and latest main.
     package_discovery_tests = [
-        test_only_appxbundle_photos,
-        test_only_msixbundle_photos,
-        test_mixed_photos_versions_are_accepted,
-        test_newest_photos_version_is_selected_once,
-        test_appx_dependencies_are_discovered,
-        test_msix_dependencies_exclude_photos,
+        test_recursive_manifest_driven_discovery,
+        test_manifest_classification,
+        test_dependency_resolution_contract,
+        test_missing_dependencies_are_rejected_before_mount,
+        test_shared_dependencies_are_deduplicated,
+        test_generic_application_menu_and_install_order,
+        test_configuration_controls_remain_wired,
+        test_windows_powershell_51_static_compatibility,
     ]
     pr4_regression_tests = [
         test_batch_elevation_preserves_arguments_and_exit_code,
@@ -277,6 +327,8 @@ def main() -> None:
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
         test_no_commit_reports_false,
+        test_one_mount_one_commit_and_post_install_verification,
+        test_error_path_discards_owned_mount_even_when_keep_mounted,
     ]
     tests = package_discovery_tests + pr4_regression_tests
 
