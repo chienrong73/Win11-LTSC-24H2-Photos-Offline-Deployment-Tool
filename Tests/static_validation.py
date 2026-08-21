@@ -311,6 +311,25 @@ def get_invoke_offline_deployment_body() -> str:
     return match.group("body")
 
 
+def test_dism_debug_logging_skips_blank_output_lines() -> None:
+    logging_loop = re.search(
+        r"foreach \(\$line in \$output\) \{\s*"
+        r"\$text = \[string\]\$line\s*"
+        r"if \(-not \[string\]::IsNullOrWhiteSpace\(\$text\)\) \{\s*"
+        r"Write-Debug -Message \$text -Component 'Dism'\s*"
+        r"\}\s*\}",
+        DISM,
+    )
+    if not logging_loop:
+        raise AssertionError("DISM debug logging must skip blank output while retaining nonblank output")
+
+    sample_output = [None, "", "   ", "Deployment Image Servicing and Management tool"]
+    debug_messages = [str(line) for line in sample_output if line is not None and str(line).strip()]
+    assert debug_messages == ["Deployment Image Servicing and Management tool"], (
+        "blank DISM lines must not be logged, and nonblank lines must remain in the debug log"
+    )
+
+
 def test_new_mount_is_committed_and_dismounted() -> None:
     body = get_invoke_offline_deployment_body()
     assert_contains(body, "if ($AutoUnmount -and $mountedHere)", "new mounts must use the auto-unmount path")
@@ -378,6 +397,7 @@ def main() -> None:
         test_project_module_import_contract_is_explicit,
         test_nested_dependency_imports_do_not_force_reload_global_modules,
         test_add_photos_direct_calls_are_exported,
+        test_dism_debug_logging_skips_blank_output_lines,
         test_new_mount_is_committed_and_dismounted,
         test_existing_mount_is_saved_and_remains_mounted,
         test_no_commit_reports_false,
